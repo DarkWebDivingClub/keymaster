@@ -5,13 +5,13 @@
 
     <parent>
         <groupId>club.dwdc</groupId>
-        <artifactId>club.dwdc.keymaster.parent</artifactId>
+        <artifactId>club.dwdc.keymaster</artifactId>
         <version>0.1.0</version>
     </parent>
 
-    <artifactId>club.dwdc.keymaster</artifactId>
+    <artifactId>club.dwdc.keymaster.core</artifactId>
 
-    <name>club.dwdc.keymaster</name>
+    <name>club.dwdc.keymaster.core</name>
     <description>DWDC KeyMaster — controller and security authority for the DWDC Key System.</description>
 
     <dependencies>

@@ -4,11 +4,11 @@
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>club.dwdc</groupId>
-    <artifactId>club.dwdc.keymaster.parent</artifactId>
+    <artifactId>club.dwdc.keymaster</artifactId>
     <version>0.1.0</version>
     <packaging>pom</packaging>
 
-    <name>club.dwdc.keymaster.parent</name>
+    <name>club.dwdc.keymaster</name>
     <description>DWDC KeyMaster — parent POM for the multi-module build.</description>
 
     <licenses>
@@ -20,7 +20,7 @@
     </licenses>
 
     <modules>
-        <module>club.dwdc.keymaster</module>
+        <module>club.dwdc.keymaster.core</module>
     </modules>
 
     <properties>
@@ -39,7 +39,7 @@
         <profile>
             <id>systemtest</id>
             <modules>
-                <module>club.dwdc.keymaster</module>
+                <module>club.dwdc.keymaster.core</module>
                 <module>club.dwdc.keymaster.systemtest</module>
             </modules>
         </profile>
@@ -57,7 +57,7 @@
             <!-- KeyMaster library (for systemtest to depend on) -->
             <dependency>
                 <groupId>club.dwdc</groupId>
-                <artifactId>club.dwdc.keymaster</artifactId>
+                <artifactId>club.dwdc.keymaster.core</artifactId>
                 <version>${project.version}</version>
             </dependency>
 
