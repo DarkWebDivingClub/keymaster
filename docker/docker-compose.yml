@@ -1,0 +1,5 @@
+services:
+  relay:
+    image: dockurr/strfry:1.0.4
+    ports:
+      - "7777:7777"

@@ -1,0 +1,146 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>club.dwdc</groupId>
+    <artifactId>club.dwdc.keymaster.parent</artifactId>
+    <version>0.1.0</version>
+    <packaging>pom</packaging>
+
+    <name>club.dwdc.keymaster.parent</name>
+    <description>DWDC KeyMaster — parent POM for the multi-module build.</description>
+
+    <licenses>
+        <license>
+            <name>GNU General Public License v3.0 only</name>
+            <url>https://www.gnu.org/licenses/gpl-3.0.html</url>
+            <distribution>repo</distribution>
+        </license>
+    </licenses>
+
+    <modules>
+        <module>club.dwdc.keymaster</module>
+    </modules>
+
+    <properties>
+        <maven.compiler.source>21</maven.compiler.source>
+        <maven.compiler.target>21</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <keyvault.version>0.1.0</keyvault.version>
+        <junit.version>5.13.1</junit.version>
+        <surefire.version>3.5.2</surefire.version>
+        <testcontainers.version>1.20.6</testcontainers.version>
+        <slf4j.version>2.0.9</slf4j.version>
+        <logback.version>1.4.14</logback.version>
+    </properties>
+
+    <profiles>
+        <profile>
+            <id>systemtest</id>
+            <modules>
+                <module>club.dwdc.keymaster</module>
+                <module>club.dwdc.keymaster.systemtest</module>
+            </modules>
+        </profile>
+    </profiles>
+
+    <repositories>
+        <repository>
+            <id>reposilite-releases</id>
+            <url>https://maven.398ja.xyz/releases</url>
+        </repository>
+    </repositories>
+
+    <dependencyManagement>
+        <dependencies>
+            <!-- KeyMaster library (for systemtest to depend on) -->
+            <dependency>
+                <groupId>club.dwdc</groupId>
+                <artifactId>club.dwdc.keymaster</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <!-- KeyVault -->
+            <dependency>
+                <groupId>club.dwdc</groupId>
+                <artifactId>club.dwdc.keyvault.core</artifactId>
+                <version>${keyvault.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>club.dwdc</groupId>
+                <artifactId>club.dwdc.keyvault.nostr</artifactId>
+                <version>${keyvault.version}</version>
+            </dependency>
+
+            <!-- Nostr -->
+            <dependency>
+                <groupId>xyz.tcheeric</groupId>
+                <artifactId>nostr-java-identity</artifactId>
+                <version>2.0.0</version>
+            </dependency>
+
+            <!-- Crypto -->
+            <dependency>
+                <groupId>org.bouncycastle</groupId>
+                <artifactId>bcprov-jdk15to18</artifactId>
+                <version>1.80</version>
+            </dependency>
+
+            <!-- HTTP / JSON -->
+            <dependency>
+                <groupId>com.squareup.okhttp3</groupId>
+                <artifactId>okhttp</artifactId>
+                <version>4.12.0</version>
+            </dependency>
+            <dependency>
+                <groupId>com.google.code.gson</groupId>
+                <artifactId>gson</artifactId>
+                <version>2.11.0</version>
+            </dependency>
+
+            <!-- Logging -->
+            <dependency>
+                <groupId>org.slf4j</groupId>
+                <artifactId>slf4j-api</artifactId>
+                <version>${slf4j.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>ch.qos.logback</groupId>
+                <artifactId>logback-classic</artifactId>
+                <version>${logback.version}</version>
+            </dependency>
+
+            <!-- Test -->
+            <dependency>
+                <groupId>org.junit.jupiter</groupId>
+                <artifactId>junit-jupiter</artifactId>
+                <version>${junit.version}</version>
+            </dependency>
+
+            <!-- Testcontainers -->
+            <dependency>
+                <groupId>org.testcontainers</groupId>
+                <artifactId>testcontainers</artifactId>
+                <version>${testcontainers.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.testcontainers</groupId>
+                <artifactId>junit-jupiter</artifactId>
+                <version>${testcontainers.version}</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <build>
+        <pluginManagement>
+            <plugins>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-surefire-plugin</artifactId>
+                    <version>${surefire.version}</version>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+    </build>
+</project>
