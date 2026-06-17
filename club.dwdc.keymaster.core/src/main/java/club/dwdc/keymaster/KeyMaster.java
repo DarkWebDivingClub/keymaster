@@ -147,6 +147,7 @@ public class KeyMaster {
     private JsonObject handleSshRequest(String method, JsonArray params) {
         return switch (method) {
             case "request_identities" -> handleSshRequestIdentities();
+            case "sign_request" -> handleSshSignRequest(params);
             default -> {
                 JsonObject response = new JsonObject();
                 response.addProperty("error", "unknown SSH method: " + method);
@@ -193,6 +194,84 @@ public class KeyMaster {
         JsonObject response = new JsonObject();
         response.add("result", result);
         return response;
+    }
+
+    private JsonObject handleSshSignRequest(JsonArray params) {
+        if (currentIdentity == null) {
+            JsonObject response = new JsonObject();
+            response.addProperty("error", "no identity set");
+            return response;
+        }
+
+        JsonObject reqParams = params.get(0).getAsJsonObject();
+        String keyBlobB64 = reqParams.get("key_blob").getAsString();
+        String dataB64 = reqParams.get("data").getAsString();
+
+        byte[] data = Base64.getDecoder().decode(dataB64);
+
+        // Derive SSH Ed25519 key path
+        int identityIndex = Bip32KeyDerivator.mangle(currentIdentity) | H;
+        int[] sshPath = new int[]{PURPOSE, SSH_COIN, identityIndex, ALG_ED25519_USER_AUTH, DEFAULT_CONFIG};
+
+        // Verify key_blob matches our derived key
+        VaultResult pubResult = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, sshPath);
+        if (!pubResult.isOk()) {
+            log.error("Failed to derive SSH Ed25519 key for signing: status={}", pubResult.status());
+            JsonObject response = new JsonObject();
+            response.addProperty("error", "failed to derive SSH key");
+            return response;
+        }
+
+        byte[] expectedKeyBlob = buildSshEd25519KeyBlob(pubResult.data());
+        String expectedKeyBlobB64 = Base64.getEncoder().encodeToString(expectedKeyBlob);
+        if (!expectedKeyBlobB64.equals(keyBlobB64)) {
+            log.error("SSH sign: key_blob mismatch (expected={}, got={})", expectedKeyBlobB64, keyBlobB64);
+            JsonObject response = new JsonObject();
+            response.addProperty("error", "key-mismatch");
+            return response;
+        }
+
+        // Sign using KeyVault
+        VaultResult signResult = vault.execute(KeyVault.FN_SIGN, data, sshPath);
+        if (!signResult.isOk()) {
+            log.error("SSH sign failed: status={}", signResult.status());
+            JsonObject response = new JsonObject();
+            response.addProperty("error", "sign failed");
+            return response;
+        }
+
+        byte[] signature = signResult.data();
+        String signatureB64 = Base64.getEncoder().encodeToString(signature);
+
+        log.info("SSH sign: signed {} bytes for {}", data.length, currentIdentity);
+
+        JsonObject result = new JsonObject();
+        result.addProperty("signature", signatureB64);
+        result.addProperty("key_type", "ssh-ed25519");
+
+        JsonObject response = new JsonObject();
+        response.add("result", result);
+        return response;
+    }
+
+    /**
+     * Returns the SSH authorized_keys line for the current identity's Ed25519 key.
+     * Format: {@code ssh-ed25519 <base64-key-blob> <identity>}
+     */
+    public String getSshAuthorizedKeysLine() {
+        if (currentIdentity == null) {
+            throw new IllegalStateException("No identity — call createIdentity() first");
+        }
+        int identityIndex = Bip32KeyDerivator.mangle(currentIdentity) | H;
+        int[] sshPath = new int[]{PURPOSE, SSH_COIN, identityIndex, ALG_ED25519_USER_AUTH, DEFAULT_CONFIG};
+
+        VaultResult pubResult = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, sshPath);
+        if (!pubResult.isOk()) {
+            throw new IllegalStateException("Failed to derive SSH key: status=" + pubResult.status());
+        }
+
+        byte[] keyBlob = buildSshEd25519KeyBlob(pubResult.data());
+        return "ssh-ed25519 " + Base64.getEncoder().encodeToString(keyBlob) + " " + currentIdentity;
     }
 
     /**
