@@ -30,20 +30,9 @@
         <keyvault.version>0.1.0</keyvault.version>
         <junit.version>5.13.1</junit.version>
         <surefire.version>3.5.2</surefire.version>
-        <testcontainers.version>1.20.6</testcontainers.version>
         <slf4j.version>2.0.9</slf4j.version>
         <logback.version>1.4.14</logback.version>
     </properties>
-
-    <profiles>
-        <profile>
-            <id>systemtest</id>
-            <modules>
-                <module>club.dwdc.keymaster.core</module>
-                <module>club.dwdc.keymaster.systemtest</module>
-            </modules>
-        </profile>
-    </profiles>
 
     <repositories>
         <repository>
@@ -54,13 +43,6 @@
 
     <dependencyManagement>
         <dependencies>
-            <!-- KeyMaster library (for systemtest to depend on) -->
-            <dependency>
-                <groupId>club.dwdc</groupId>
-                <artifactId>club.dwdc.keymaster.core</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-
             <!-- KeyVault -->
             <dependency>
                 <groupId>club.dwdc</groupId>
@@ -118,17 +100,6 @@
                 <version>${junit.version}</version>
             </dependency>
 
-            <!-- Testcontainers -->
-            <dependency>
-                <groupId>org.testcontainers</groupId>
-                <artifactId>testcontainers</artifactId>
-                <version>${testcontainers.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>org.testcontainers</groupId>
-                <artifactId>junit-jupiter</artifactId>
-                <version>${testcontainers.version}</version>
-            </dependency>
         </dependencies>
     </dependencyManagement>
 
