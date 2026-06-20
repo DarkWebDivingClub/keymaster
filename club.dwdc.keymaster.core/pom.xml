@@ -25,6 +25,16 @@
             <artifactId>club.dwdc.keyvault.nostr</artifactId>
         </dependency>
 
+        <!-- KeyExporter -->
+        <dependency>
+            <groupId>club.dwdc</groupId>
+            <artifactId>club.dwdc.keyexporter.core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>club.dwdc</groupId>
+            <artifactId>club.dwdc.keyexporter.openpgp</artifactId>
+        </dependency>
+
         <!-- Nostr -->
         <dependency>
             <groupId>xyz.tcheeric</groupId>

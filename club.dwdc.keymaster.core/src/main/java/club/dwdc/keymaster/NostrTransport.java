@@ -1,5 +1,6 @@
 package club.dwdc.keymaster;
 
+import club.dwdc.keyvault.core.Bip32KeyDerivator;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
@@ -9,6 +10,9 @@ import com.google.gson.JsonParser;
 import nostr.crypto.schnorr.Schnorr;
 import nostr.encryption.MessageCipher44;
 import nostr.util.NostrUtil;
+import org.bitcoinj.base.BitcoinNetwork;
+import org.bitcoinj.crypto.ChildNumber;
+import org.bitcoinj.crypto.DeterministicKey;
 import org.bouncycastle.asn1.x9.X9ECParameters;
 import org.bouncycastle.crypto.ec.CustomNamedCurves;
 import org.bouncycastle.jce.provider.BouncyCastleProvider;
@@ -19,7 +23,6 @@ import org.slf4j.LoggerFactory;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
-import java.security.SecureRandom;
 import java.security.Security;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
@@ -30,12 +33,14 @@ import java.util.concurrent.TimeoutException;
 /**
  * Nostr transport layer for KeyMaster-Avatar communication.
  * Handles NIP-44 encrypted kind-27235 events over a Nostr relay.
+ *
+ * <p>Service channels are derived deterministically from exchanged xpubs —
+ * no service.spawn round-trip is needed.</p>
  */
 public class NostrTransport {
     private static final Logger log = LoggerFactory.getLogger(NostrTransport.class);
     private static final int PROTOCOL_KIND = 27235;
     private static final Gson GSON = new GsonBuilder().disableHtmlEscaping().create();
-    private static final SecureRandom SECURE_RANDOM = new SecureRandom();
     private static final X9ECParameters SECP256K1 = CustomNamedCurves.getByName("secp256k1");
 
     static {
@@ -51,6 +56,10 @@ public class NostrTransport {
     private NostrRelayClient relayClient;
     private String sessionEventId;
 
+    /** Realm BIP-32 derivator and index for deriving service channel keys. */
+    private Bip32KeyDerivator realmDerivator;
+    private int realmIndex;
+
     private final ConcurrentHashMap<String, CompletableFuture<JsonObject>> pendingResponses =
             new ConcurrentHashMap<>();
 
@@ -64,10 +73,6 @@ public class NostrTransport {
      * Callback for handling incoming service requests (e.g. request_identities).
      */
     public interface ServiceRequestHandler {
-        /**
-         * Handle a service request and return a response envelope.
-         * The returned object must have either a "result" or "error" field.
-         */
         JsonObject handleServiceRequest(String serviceType, String method, JsonArray params);
     }
 
@@ -92,8 +97,8 @@ public class NostrTransport {
     }
 
     /**
-     * @param privKey 32-byte Schnorr private key (vault-derived)
-     * @param pubKey  32-byte Schnorr public key (vault-derived)
+     * @param privKey 32-byte Schnorr private key
+     * @param pubKey  32-byte Schnorr public key
      */
     public NostrTransport(byte[] privKey, byte[] pubKey) {
         this.privKey = privKey;
@@ -107,6 +112,14 @@ public class NostrTransport {
 
     public void setServiceRequestHandler(ServiceRequestHandler handler) {
         this.serviceRequestHandler = handler;
+    }
+
+    /**
+     * Set the realm derivator for deterministic service channel derivation.
+     */
+    public void setRealmDerivator(Bip32KeyDerivator derivator, int realmIndex) {
+        this.realmDerivator = derivator;
+        this.realmIndex = realmIndex;
     }
 
     /**
@@ -148,13 +161,19 @@ public class NostrTransport {
     }
 
     /**
-     * Send an attach request to the Avatar identified by its public key.
+     * Send an attach request to the Avatar.
      *
-     * @param avatarPubKeyHex Avatar's Schnorr public key (hex)
-     * @param services        list of service identifiers to request (e.g. "ssh", "nostr")
+     * @param avatarLoginXpub Avatar's BIP-32 login xpub (Base58Check)
+     * @param services        list of service identifiers to request
+     * @param realmXpub       our realm xpub to share with the Avatar
+     * @param identityNpub    the identity npub for the connector
      * @return session event ID on success
      */
-    public String sendAttach(String avatarPubKeyHex, List<String> services) throws Exception {
+    public String sendAttach(String avatarLoginXpub, List<String> services,
+                             String realmXpub, String identityNpub) throws Exception {
+        // Derive the avatar's login npub from the xpub for event addressing
+        String avatarPubKeyHex = xpubToNpub(avatarLoginXpub);
+
         JsonObject params = new JsonObject();
         JsonArray servicesArr = new JsonArray();
         if (services != null) {
@@ -162,12 +181,25 @@ public class NostrTransport {
         }
         params.add("services", servicesArr);
 
+        // Add connector with realm_xpub and identity
+        JsonObject connector = new JsonObject();
+        connector.addProperty("realm_xpub", realmXpub);
+        connector.addProperty("login_xpub", avatarLoginXpub);
+        if (identityNpub != null) {
+            connector.addProperty("identity_npub", identityNpub);
+        }
+        params.add("connector", connector);
+
         String eventId = sendRequest("attach", params, avatarPubKeyHex, null);
         this.sessionEventId = eventId;
 
         JsonObject response = waitForResponse(eventId, 15);
         if (response != null && response.has("result")) {
             log.info("Attach successful. Session: {}", eventId);
+
+            // Derive service channels from xpubs (zero extra round-trips)
+            deriveServiceChannels(avatarLoginXpub, services);
+
             return eventId;
         } else {
             String error = response != null && response.has("error")
@@ -177,14 +209,91 @@ public class NostrTransport {
     }
 
     /**
+     * Derive service channel keypairs from the exchanged xpubs.
+     * Both sides compute the same channel pubkeys independently.
+     */
+    private void deriveServiceChannels(String avatarLoginXpub, List<String> services) {
+        if (realmDerivator == null) {
+            log.warn("No realm derivator set — cannot derive service channels");
+            return;
+        }
+        if (services == null) return;
+
+        for (String serviceType : services) {
+            try {
+                int protocolIdx = Bip32KeyDerivator.mangle(serviceType);
+                int seq = 0;
+
+                // Derive our (KM) service channel private key
+                byte[] kmSvcPrivKey = realmDerivator.derive(realmIndex, protocolIdx, seq);
+                byte[] kmSvcPubKey = computeSchnorrPubKey(kmSvcPrivKey);
+                String kmSvcPubKeyHex = NostrUtil.bytesToHex(kmSvcPubKey);
+
+                // Derive avatar's service channel pubkey from their login xpub
+                String avatarSvcPubKeyHex = deriveServicePubkeyFromXpub(
+                        avatarLoginXpub, protocolIdx, seq);
+
+                ServiceChannelInfo channel = new ServiceChannelInfo(
+                        serviceType, kmSvcPrivKey, kmSvcPubKey, avatarSvcPubKeyHex);
+                serviceChannels.put(avatarSvcPubKeyHex, channel);
+
+                // Subscribe to events addressed to our service pubkey
+                String svcSubId = "svc-" + serviceType + "-" + System.currentTimeMillis();
+                String subMsg = String.format(
+                        "[\"REQ\",\"%s\",{\"kinds\":[%d],\"#p\":[\"%s\"],\"since\":%d}]",
+                        svcSubId, PROTOCOL_KIND, kmSvcPubKeyHex,
+                        System.currentTimeMillis() / 1000 - 1);
+                relayClient.send(subMsg);
+
+                log.info("Service channel derived: type={}, km_svc_pk={}, avatar_svc_pk={}",
+                        serviceType, kmSvcPubKeyHex, avatarSvcPubKeyHex);
+
+            } catch (Exception e) {
+                log.error("Error deriving service channel for {}: {}", serviceType, e.getMessage(), e);
+            }
+        }
+    }
+
+    /**
+     * Derive a service pubkey from an xpub string using BIP-32 public-only derivation.
+     * Path: xpub / protocolIndex / seq
+     *
+     * @return x-only (Schnorr) pubkey hex
+     */
+    static String deriveServicePubkeyFromXpub(String xpubStr, int protocolIndex, int seq) {
+        DeterministicKey xpubKey = DeterministicKey.deserializeB58(xpubStr, BitcoinNetwork.MAINNET);
+        DeterministicKey child1 = org.bitcoinj.crypto.HDKeyDerivation.deriveChildKey(
+                xpubKey, new ChildNumber(protocolIndex));
+        DeterministicKey child2 = org.bitcoinj.crypto.HDKeyDerivation.deriveChildKey(
+                child1, new ChildNumber(seq));
+        // Compressed pubkey (33 bytes) -> x-only (32 bytes)
+        byte[] compressed = child2.getPubKey();
+        byte[] xOnly = new byte[32];
+        System.arraycopy(compressed, 1, xOnly, 0, 32);
+        return NostrUtil.bytesToHex(xOnly);
+    }
+
+    /**
+     * Extract the x-only (Schnorr) npub from a BIP-32 xpub string.
+     */
+    static String xpubToNpub(String xpubStr) {
+        DeterministicKey key = DeterministicKey.deserializeB58(xpubStr, BitcoinNetwork.MAINNET);
+        byte[] compressed = key.getPubKey();
+        byte[] xOnly = new byte[32];
+        System.arraycopy(compressed, 1, xOnly, 0, 32);
+        return NostrUtil.bytesToHex(xOnly);
+    }
+
+    /**
      * Send a detach request to end the current session.
      */
-    public void sendDetach(String avatarPubKeyHex) throws Exception {
+    public void sendDetach(String avatarLoginXpub) throws Exception {
         if (sessionEventId == null) {
             log.warn("No active session to detach");
             return;
         }
 
+        String avatarPubKeyHex = xpubToNpub(avatarLoginXpub);
         String eventId = sendRequest("detach", null, avatarPubKeyHex, sessionEventId);
         JsonObject response = waitForResponse(eventId, 10);
         if (response != null && response.has("result")) {
@@ -204,6 +313,7 @@ public class NostrTransport {
     String sendRequest(String method, JsonObject params, String recipientPubKeyHex,
                        String refSessionEventId) throws Exception {
         JsonObject request = new JsonObject();
+        request.addProperty("jsonrpc", "2.0");
         request.addProperty("method", method);
         JsonArray paramsArr = new JsonArray();
         if (params != null) paramsArr.add(params);
@@ -315,11 +425,12 @@ public class NostrTransport {
             JsonObject payload = JsonParser.parseString(plaintext).getAsJsonObject();
 
             if (payload.has("method")) {
-                // Incoming request
+                // Incoming request — only service channel requests expected
                 if (matchedChannel != null) {
                     handleServiceChannelRequest(event, matchedChannel, payload);
                 } else {
-                    handleRootRequest(event, senderPubKey, payload);
+                    log.warn("Root request received but service.spawn no longer supported: {}",
+                            payload.get("method").getAsString());
                 }
             } else if (payload.has("result") || payload.has("error")) {
                 handleResponse(event, payload);
@@ -331,67 +442,31 @@ public class NostrTransport {
 
     // ==================== Request handling ====================
 
-    private void handleRootRequest(JsonObject event, String senderPubKeyHex, JsonObject payload) {
-        String method = payload.get("method").getAsString();
-        log.info("Root request: {} from {}", method, senderPubKeyHex);
-
-        if ("service.spawn".equals(method)) {
-            handleServiceSpawn(event, senderPubKeyHex, payload);
-        } else {
-            log.warn("Unknown root request method: {}", method);
-        }
-    }
-
-    private void handleServiceSpawn(JsonObject event, String avatarPubKeyHex, JsonObject payload) {
-        try {
-            JsonArray params = payload.getAsJsonArray("params");
-            JsonObject spawnParams = params.get(0).getAsJsonObject();
-
-            String serviceAvatarPubKeyHex = spawnParams.get("service_avatar_pubkey").getAsString();
-            String serviceType = spawnParams.get("service_type").getAsString();
-
-            log.info("service.spawn: type={}, avatar_svc_pubkey={}", serviceType, serviceAvatarPubKeyHex);
-
-            // Generate ephemeral service channel keypair
-            byte[] svcPrivKey = new byte[32];
-            SECURE_RANDOM.nextBytes(svcPrivKey);
-            byte[] svcPubKey = computeSchnorrPubKey(svcPrivKey);
-            String svcPubKeyHex = NostrUtil.bytesToHex(svcPubKey);
-
-            ServiceChannelInfo channel = new ServiceChannelInfo(
-                    serviceType, svcPrivKey, svcPubKey, serviceAvatarPubKeyHex);
-            serviceChannels.put(serviceAvatarPubKeyHex, channel);
-
-            // Subscribe to events addressed to our service pubkey
-            String svcSubId = "svc-" + serviceType + "-" + System.currentTimeMillis();
-            String subMsg = String.format(
-                    "[\"REQ\",\"%s\",{\"kinds\":[%d],\"#p\":[\"%s\"],\"since\":%d}]",
-                    svcSubId, PROTOCOL_KIND, svcPubKeyHex,
-                    System.currentTimeMillis() / 1000 - 1);
-            relayClient.send(subMsg);
-            log.info("Subscribed to service channel events for {} ({})", svcPubKeyHex, serviceType);
-
-            // Send response with our service pubkey
-            JsonObject result = new JsonObject();
-            result.addProperty("service_pubkey", svcPubKeyHex);
-
-            JsonObject response = new JsonObject();
-            response.add("result", result);
-
-            String replyToEventId = event.get("id").getAsString();
-            sendResponseEvent(replyToEventId, avatarPubKeyHex, response, privKey, pubKeyHex);
-
-            log.info("service.spawn response sent: km_service_pubkey={}", svcPubKeyHex);
-
-        } catch (Exception e) {
-            log.error("Error handling service.spawn: {}", e.getMessage(), e);
-        }
-    }
-
     private void handleServiceChannelRequest(JsonObject event, ServiceChannelInfo channel,
                                              JsonObject payload) {
-        String method = payload.get("method").getAsString();
-        JsonArray params = payload.has("params") ? payload.getAsJsonArray("params") : new JsonArray();
+        String rawMethod = payload.get("method").getAsString();
+        // The method from the payload may be prefixed with the service type
+        // (e.g. "ssh.request_identities"). Strip the prefix so the handler
+        // receives just the bare method name (e.g. "request_identities").
+        String method = rawMethod;
+        String prefix = channel.serviceType + ".";
+        if (rawMethod.startsWith(prefix)) {
+            method = rawMethod.substring(prefix.length());
+        }
+
+        JsonArray params;
+        if (payload.has("params")) {
+            var paramsEl = payload.get("params");
+            if (paramsEl.isJsonArray()) {
+                params = paramsEl.getAsJsonArray();
+            } else {
+                // Wrap object params in an array for uniform handling
+                params = new JsonArray();
+                params.add(paramsEl);
+            }
+        } else {
+            params = new JsonArray();
+        }
 
         log.info("Service request: {}.{}", channel.serviceType, method);
 
@@ -403,15 +478,35 @@ public class NostrTransport {
             } catch (Exception e) {
                 log.error("Service request handler error: {}", e.getMessage(), e);
                 response = new JsonObject();
-                response.addProperty("error", "handler error: " + e.getMessage());
+                response.addProperty("error", e.getMessage());
             }
         } else {
             response = new JsonObject();
             response.addProperty("error", "no service handler registered");
         }
 
+        // Wrap handler response as JSON-RPC 2.0
+        JsonObject rpcResponse = new JsonObject();
+        rpcResponse.addProperty("jsonrpc", "2.0");
+        if (payload.has("id")) {
+            rpcResponse.add("id", payload.get("id"));
+        }
+        if (response.has("error")) {
+            // Wrap as a proper JSON-RPC 2.0 error object with code and message
+            JsonObject errorObj = new JsonObject();
+            errorObj.addProperty("code", -32603); // internal error
+            errorObj.addProperty("message", response.get("error").getAsString());
+            rpcResponse.add("error", errorObj);
+        } else if (response.has("result")) {
+            // Handler already wrapped its data in a "result" field — unwrap to avoid
+            // double-nesting (result.result.identities vs result.identities)
+            rpcResponse.add("result", response.get("result"));
+        } else {
+            rpcResponse.add("result", response);
+        }
+
         String replyToEventId = event.get("id").getAsString();
-        sendResponseEvent(replyToEventId, channel.avatarServicePubKeyHex, response,
+        sendResponseEvent(replyToEventId, channel.avatarServicePubKeyHex, rpcResponse,
                 channel.kmServicePrivKey, channel.kmServicePubKeyHex);
     }
 
@@ -437,9 +532,6 @@ public class NostrTransport {
 
     // ==================== Event sending ====================
 
-    /**
-     * Send a response event (with e-reply tag) using the specified signing keys.
-     */
     private void sendResponseEvent(String replyToEventId, String recipientPubKeyHex,
                                    JsonObject response, byte[] signingPrivKey,
                                    String signingPubKeyHex) {

@@ -55,6 +55,18 @@
                 <version>${keyvault.version}</version>
             </dependency>
 
+            <!-- KeyExporter -->
+            <dependency>
+                <groupId>club.dwdc</groupId>
+                <artifactId>club.dwdc.keyexporter.core</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>club.dwdc</groupId>
+                <artifactId>club.dwdc.keyexporter.openpgp</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
             <!-- Nostr -->
             <dependency>
                 <groupId>xyz.tcheeric</groupId>

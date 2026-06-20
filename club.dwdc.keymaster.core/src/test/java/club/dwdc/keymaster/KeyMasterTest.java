@@ -1,5 +1,6 @@
 package club.dwdc.keymaster;
 
+import club.dwdc.keyvault.core.Bip32KeyDerivator;
 import club.dwdc.keyvault.core.Bip32KeyVault;
 import club.dwdc.keyvault.nostr.KeyVaultIdentity;
 import nostr.util.NostrUtil;
@@ -56,29 +57,62 @@ class KeyMasterTest {
         assertEquals(expected, km.getPubKeyHex());
     }
 
+    // ── AvatarDescriptor tests ──────────────────────────────────────────
+
     @Test
-    void avatarDescriptorFromJson() {
+    void avatarDescriptorFromJsonWithLoginXpub() {
         String json = """
                 {
                   "relay": "ws://localhost:7777",
-                  "pubkey": "abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234",
+                  "login_xpub": "xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8",
                   "services": ["ssh", "nostr"]
                 }
                 """;
         AvatarDescriptor d = AvatarDescriptor.fromJson(json);
         assertEquals("ws://localhost:7777", d.relay());
-        assertEquals("abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234", d.pubkey());
+        assertTrue(d.loginXpub().startsWith("xpub"));
         assertEquals(List.of("ssh", "nostr"), d.services());
+    }
+
+    @Test
+    void avatarDescriptorFromJsonWithLegacyPubkey() {
+        // Backwards compatibility: "pubkey" field still works
+        String json = """
+                {
+                  "relay": "ws://localhost:7777",
+                  "pubkey": "xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8",
+                  "services": ["ssh"]
+                }
+                """;
+        AvatarDescriptor d = AvatarDescriptor.fromJson(json);
+        assertTrue(d.loginXpub().startsWith("xpub"));
+    }
+
+    @Test
+    void avatarDescriptorLoginNpub() {
+        // Use a known xpub and verify loginNpub() returns a valid 64-char hex
+        String json = """
+                {
+                  "relay": "ws://localhost:7777",
+                  "login_xpub": "xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8"
+                }
+                """;
+        AvatarDescriptor d = AvatarDescriptor.fromJson(json);
+        String npub = d.loginNpub();
+        assertNotNull(npub);
+        assertEquals(64, npub.length());
+        // Should be valid hex
+        assertDoesNotThrow(() -> NostrUtil.hexToBytes(npub));
     }
 
     @Test
     void avatarDescriptorRejectsNullRelay() {
         assertThrows(IllegalArgumentException.class, () ->
-                new AvatarDescriptor(null, "abcd1234", List.of()));
+                new AvatarDescriptor(null, "xpub123", List.of()));
     }
 
     @Test
-    void avatarDescriptorRejectsNullPubkey() {
+    void avatarDescriptorRejectsNullLoginXpub() {
         assertThrows(IllegalArgumentException.class, () ->
                 new AvatarDescriptor("ws://localhost:7777", null, List.of()));
     }
@@ -88,10 +122,74 @@ class KeyMasterTest {
         String json = """
                 {
                   "relay": "ws://localhost:7777",
-                  "pubkey": "abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234"
+                  "login_xpub": "xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8"
                 }
                 """;
         AvatarDescriptor d = AvatarDescriptor.fromJson(json);
         assertEquals(List.of(), d.services());
+    }
+
+    // ── Realm derivation tests ──────────────────────────────────────────
+
+    @Test
+    void realmXpubIsDeterministic() {
+        byte[] seed = new byte[64];
+        seed[0] = 42;
+        KeyMaster km1 = new KeyMaster(TEST_MNEMONIC, seed);
+        KeyMaster km2 = new KeyMaster(TEST_MNEMONIC, seed.clone());
+        assertEquals(km1.deriveRealmXpub(0), km2.deriveRealmXpub(0));
+    }
+
+    @Test
+    void realmXpubFormat() {
+        byte[] seed = new byte[64];
+        seed[0] = 1;
+        KeyMaster km = new KeyMaster(TEST_MNEMONIC, seed);
+        String xpub = km.deriveRealmXpub(0);
+        assertTrue(xpub.startsWith("xpub"), "realm xpub: " + xpub);
+    }
+
+    @Test
+    void realmServiceKeyDerivation() {
+        byte[] seed = new byte[64];
+        seed[0] = 1;
+        KeyMaster km = new KeyMaster(TEST_MNEMONIC, seed);
+        byte[] sshKey = km.deriveRealmServiceKey(0, "ssh", 0);
+        byte[] gpgKey = km.deriveRealmServiceKey(0, "gpg", 0);
+        assertNotNull(sshKey);
+        assertEquals(32, sshKey.length);
+        // Different services produce different keys
+        assertFalse(java.util.Arrays.equals(sshKey, gpgKey));
+    }
+
+    @Test
+    void xpubToNpubProduces64CharHex() {
+        // Use a valid xpub (m/0 from well-known seed)
+        byte[] seed = new byte[64];
+        seed[0] = 1;
+        Bip32KeyDerivator kd = new Bip32KeyDerivator(seed);
+        String xpub = kd.deriveXpub(0);
+        String npub = NostrTransport.xpubToNpub(xpub);
+        assertEquals(64, npub.length());
+    }
+
+    @Test
+    void deriveServicePubkeyFromXpubConsistency() {
+        byte[] seed = new byte[64];
+        seed[0] = 1;
+        Bip32KeyDerivator kd = new Bip32KeyDerivator(seed);
+
+        // Derive privkey path: 0 / mangle("ssh") / 0
+        int protocolIdx = Bip32KeyDerivator.mangle("ssh");
+        byte[] privKey = kd.derive(0, protocolIdx, 0);
+        byte[] pubKeyFromPriv = NostrTransport.computeSchnorrPubKey(privKey);
+        String pubHexFromPriv = NostrUtil.bytesToHex(pubKeyFromPriv);
+
+        // Derive xpub at m/0, then public-only derive to mangle("ssh")/0
+        String xpub = kd.deriveXpub(0);
+        String pubHexFromXpub = NostrTransport.deriveServicePubkeyFromXpub(xpub, protocolIdx, 0);
+
+        assertEquals(pubHexFromPriv, pubHexFromXpub,
+                "Private-derived pubkey must match public-derived pubkey");
     }
 }
