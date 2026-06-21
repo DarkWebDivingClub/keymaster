@@ -21,7 +21,7 @@ class KeyMasterTest {
 
     @Test
     void createAndLogin() {
-        KeyMaster km = new KeyMaster(TEST_MNEMONIC);
+        KeyMaster km = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC));
         km.createIdentity("alice@atlanta.com");
         assertNotNull(km.getPubKeyHex());
         assertEquals(64, km.getPubKeyHex().length()); // 32 bytes hex
@@ -29,25 +29,25 @@ class KeyMasterTest {
 
     @Test
     void deterministicIdentity() {
-        KeyMaster km1 = new KeyMaster(TEST_MNEMONIC);
+        KeyMaster km1 = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC));
         km1.createIdentity("alice@atlanta.com");
-        KeyMaster km2 = new KeyMaster(TEST_MNEMONIC);
+        KeyMaster km2 = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC));
         km2.createIdentity("alice@atlanta.com");
         assertEquals(km1.getPubKeyHex(), km2.getPubKeyHex());
     }
 
     @Test
     void differentIdentitiesDifferentKeys() {
-        KeyMaster alice = new KeyMaster(TEST_MNEMONIC);
+        KeyMaster alice = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC));
         alice.createIdentity("alice@atlanta.com");
-        KeyMaster bob = new KeyMaster(TEST_MNEMONIC);
+        KeyMaster bob = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC));
         bob.createIdentity("bob@ssh.com");
         assertNotEquals(alice.getPubKeyHex(), bob.getPubKeyHex());
     }
 
     @Test
     void matchesKeyVaultIdentity() {
-        KeyMaster km = new KeyMaster(TEST_MNEMONIC);
+        KeyMaster km = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC));
         km.createIdentity("alice@atlanta.com");
 
         Bip32KeyVault vault = new Bip32KeyVault(TEST_MNEMONIC);
@@ -135,8 +135,8 @@ class KeyMasterTest {
     void realmXpubIsDeterministic() {
         byte[] seed = new byte[64];
         seed[0] = 42;
-        KeyMaster km1 = new KeyMaster(TEST_MNEMONIC, seed);
-        KeyMaster km2 = new KeyMaster(TEST_MNEMONIC, seed.clone());
+        KeyMaster km1 = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC), seed);
+        KeyMaster km2 = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC), seed.clone());
         assertEquals(km1.deriveRealmXpub(0), km2.deriveRealmXpub(0));
     }
 
@@ -144,7 +144,7 @@ class KeyMasterTest {
     void realmXpubFormat() {
         byte[] seed = new byte[64];
         seed[0] = 1;
-        KeyMaster km = new KeyMaster(TEST_MNEMONIC, seed);
+        KeyMaster km = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC), seed);
         String xpub = km.deriveRealmXpub(0);
         assertTrue(xpub.startsWith("xpub"), "realm xpub: " + xpub);
     }
@@ -153,7 +153,7 @@ class KeyMasterTest {
     void realmServiceKeyDerivation() {
         byte[] seed = new byte[64];
         seed[0] = 1;
-        KeyMaster km = new KeyMaster(TEST_MNEMONIC, seed);
+        KeyMaster km = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC), seed);
         byte[] sshKey = km.deriveRealmServiceKey(0, "ssh", 0);
         byte[] gpgKey = km.deriveRealmServiceKey(0, "gpg", 0);
         assertNotNull(sshKey);

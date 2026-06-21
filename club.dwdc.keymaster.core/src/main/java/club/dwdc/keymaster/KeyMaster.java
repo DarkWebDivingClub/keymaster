@@ -7,7 +7,6 @@ import club.dwdc.keyexporter.openpgp.OpenPgpExport;
 import club.dwdc.keyexporter.openpgp.OpenPgpExporter;
 import club.dwdc.keyvault.core.AlgField;
 import club.dwdc.keyvault.core.Bip32KeyDerivator;
-import club.dwdc.keyvault.core.Bip32KeyVault;
 import club.dwdc.keyvault.core.ConfigField;
 import club.dwdc.keyvault.core.KeyVault;
 import club.dwdc.keyvault.core.Protocol;
@@ -65,29 +64,29 @@ public class KeyMaster {
     private String avatarLoginXpub;
 
     /**
-     * Create a KeyMaster from a BIP-39 mnemonic.
+     * Create a KeyMaster from a ready-to-use KeyVault.
      *
-     * <p>Creates the vault and initializes a random realm transport seed.
+     * <p>Initializes a random realm transport seed.
      * Call {@link #createIdentity(String)} to derive the transport key for an identity.
      *
-     * @param mnemonic BIP-39 mnemonic phrase
+     * @param vault KeyVault instance for cryptographic operations
      */
-    public KeyMaster(String mnemonic) {
-        this.vault = new Bip32KeyVault(mnemonic);
+    public KeyMaster(KeyVault vault) {
+        this.vault = vault;
         byte[] realmSeed = new byte[64];
         new SecureRandom().nextBytes(realmSeed);
         this.realmDerivator = new Bip32KeyDerivator(realmSeed);
     }
 
     /**
-     * Create a KeyMaster from a BIP-39 mnemonic with a specified realm transport seed.
+     * Create a KeyMaster from a KeyVault with a specified realm transport seed.
      * This constructor is useful for testing determinism.
      *
-     * @param mnemonic  BIP-39 mnemonic phrase
+     * @param vault     KeyVault instance for cryptographic operations
      * @param realmSeed 64-byte seed for the realm BIP-32 derivator
      */
-    public KeyMaster(String mnemonic, byte[] realmSeed) {
-        this.vault = new Bip32KeyVault(mnemonic);
+    public KeyMaster(KeyVault vault, byte[] realmSeed) {
+        this.vault = vault;
         this.realmDerivator = new Bip32KeyDerivator(realmSeed);
     }
 
@@ -208,7 +207,7 @@ public class KeyMaster {
 
         this.avatarLoginXpub = avatar.loginXpub();
         return transport.sendAttach(avatarLoginXpub, avatar.services(), realmXpub,
-                currentIdentity);
+                pubKeyHex, privKey);
     }
 
     /**
