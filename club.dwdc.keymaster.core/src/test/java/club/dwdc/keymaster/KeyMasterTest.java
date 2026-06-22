@@ -57,6 +57,22 @@ class KeyMasterTest {
         assertEquals(expected, km.getPubKeyHex());
     }
 
+    // ── ApprovalHandler tests ──────────────────────────────────────────
+
+    @Test
+    void approvalHandlerAcceptsNull() {
+        KeyMaster km = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC));
+        km.setApprovalHandler(null); // should not throw
+        assertNotNull(km);
+    }
+
+    @Test
+    void approvalHandlerAcceptsLambda() {
+        KeyMaster km = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC));
+        km.setApprovalHandler((type, detail) -> true); // auto-approve lambda
+        assertNotNull(km);
+    }
+
     // ── AvatarDescriptor tests ──────────────────────────────────────────
 
     @Test

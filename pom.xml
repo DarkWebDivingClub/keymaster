@@ -21,6 +21,9 @@
 
     <modules>
         <module>club.dwdc.keymaster.core</module>
+        <module>club.dwdc.keymaster.desktop</module>
+        <module>club.dwdc.keymaster.daemon</module>
+        <module>club.dwdc.keymaster.cli</module>
     </modules>
 
     <properties>
@@ -52,6 +55,11 @@
             <dependency>
                 <groupId>club.dwdc</groupId>
                 <artifactId>club.dwdc.keyvault.nostr</artifactId>
+                <version>${keyvault.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>club.dwdc</groupId>
+                <artifactId>club.dwdc.keyvault.desktop</artifactId>
                 <version>${keyvault.version}</version>
             </dependency>
 

@@ -25,6 +25,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.Security;
 import java.util.List;
+import java.util.TreeMap;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
@@ -66,6 +67,9 @@ public class NostrTransport {
     // Service channel tracking: keyed by avatar service pubkey hex
     private final ConcurrentHashMap<String, ServiceChannelInfo> serviceChannels =
             new ConcurrentHashMap<>();
+
+    /** Avatar login npub (hex) — set during attach for p tag markers on responses. */
+    private String avatarLoginNpub;
 
     private ServiceRequestHandler serviceRequestHandler;
 
@@ -166,11 +170,13 @@ public class NostrTransport {
      * @param avatarLoginXpub Avatar's BIP-32 login xpub (Base58Check)
      * @param services        list of service identifiers to request
      * @param realmXpub       our realm xpub to share with the Avatar
-     * @param identityNpub    the identity npub for the connector
+     * @param identityNpub    the identity npub (64-char hex Nostr pubkey)
+     * @param identityPrivKey 32-byte private key for signing the connector
      * @return session event ID on success
      */
     public String sendAttach(String avatarLoginXpub, List<String> services,
-                             String realmXpub, String identityNpub) throws Exception {
+                             String realmXpub, String identityNpub,
+                             byte[] identityPrivKey) throws Exception {
         // Derive the avatar's login npub from the xpub for event addressing
         String avatarPubKeyHex = xpubToNpub(avatarLoginXpub);
 
@@ -189,6 +195,18 @@ public class NostrTransport {
             connector.addProperty("identity_npub", identityNpub);
         }
         params.add("connector", connector);
+
+        // Sign the canonical connector with the identity key (Schnorr/BIP-340)
+        if (identityPrivKey != null) {
+            String canonical = canonicalizeJson(connector);
+            byte[] hash = MessageDigest.getInstance("SHA-256")
+                    .digest(canonical.getBytes(StandardCharsets.UTF_8));
+            byte[] sig = Schnorr.sign(hash, identityPrivKey, NostrEventHelper.generateAuxRand());
+            params.addProperty("connector_sig", NostrUtil.bytesToHex(sig));
+        }
+
+        // Store avatar login npub for p tag markers on responses
+        this.avatarLoginNpub = avatarPubKeyHex;
 
         String eventId = sendRequest("attach", params, avatarPubKeyHex, null);
         this.sessionEventId = eventId;
@@ -548,6 +566,16 @@ public class NostrTransport {
             pTag.add(recipientPubKeyHex);
             tags.add(pTag);
 
+            // Add "login" marker p tag for unified subscription routing
+            if (avatarLoginNpub != null) {
+                JsonArray loginPTag = new JsonArray();
+                loginPTag.add("p");
+                loginPTag.add(avatarLoginNpub);
+                loginPTag.add("");
+                loginPTag.add("login");
+                tags.add(loginPTag);
+            }
+
             JsonArray eTag = new JsonArray();
             eTag.add("e");
             eTag.add(replyToEventId);
@@ -611,6 +639,32 @@ public class NostrTransport {
                 .replace("\n", "\\n")
                 .replace("\r", "\\r")
                 .replace("\t", "\\t");
+    }
+
+    /**
+     * Canonical JSON: sort object keys lexicographically, compact output.
+     * Produces deterministic byte-for-byte output for Schnorr signing.
+     */
+    static String canonicalizeJson(JsonObject obj) {
+        TreeMap<String, String> sorted = new TreeMap<>();
+        for (var entry : obj.entrySet()) {
+            JsonElement val = entry.getValue();
+            if (val.isJsonPrimitive() && val.getAsJsonPrimitive().isString()) {
+                sorted.put(entry.getKey(), "\"" + escapeJsonString(val.getAsString()) + "\"");
+            } else {
+                sorted.put(entry.getKey(), GSON.toJson(val));
+            }
+        }
+        StringBuilder sb = new StringBuilder("{");
+        boolean first = true;
+        for (var entry : sorted.entrySet()) {
+            if (!first) sb.append(",");
+            sb.append("\"").append(escapeJsonString(entry.getKey())).append("\":")
+              .append(entry.getValue());
+            first = false;
+        }
+        sb.append("}");
+        return sb.toString();
     }
 
     /**

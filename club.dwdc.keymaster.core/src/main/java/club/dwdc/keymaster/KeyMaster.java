@@ -49,6 +49,7 @@ public class KeyMaster {
             new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex() | H;
 
     private final KeyVault vault;
+    private ApprovalHandler approvalHandler;
 
     private int[] path;
     private byte[] privKey;
@@ -88,6 +89,19 @@ public class KeyMaster {
     public KeyMaster(KeyVault vault, byte[] realmSeed) {
         this.vault = vault;
         this.realmDerivator = new Bip32KeyDerivator(realmSeed);
+    }
+
+    /**
+     * Set an approval handler for incoming service requests.
+     *
+     * <p>When set, every service request is passed through the handler before
+     * processing. When {@code null} (the default), all requests are auto-approved
+     * for backward compatibility.
+     *
+     * @param handler approval handler, or {@code null} to auto-approve
+     */
+    public void setApprovalHandler(ApprovalHandler handler) {
+        this.approvalHandler = handler;
     }
 
     /**
@@ -229,6 +243,17 @@ public class KeyMaster {
     private JsonObject handleServiceRequest(String serviceType, String method, JsonArray params) {
         log.info("Service request: {}.{}", serviceType, method);
 
+        if (approvalHandler != null) {
+            String requestType = serviceType + "." + method;
+            String detail = buildRequestDetail(serviceType, method, params);
+            if (!approvalHandler.approve(requestType, detail)) {
+                log.info("Request denied by approval handler: {}", requestType);
+                JsonObject response = new JsonObject();
+                response.addProperty("error", "request denied by user");
+                return response;
+            }
+        }
+
         if ("ssh".equals(serviceType)) {
             return handleSshRequest(method, params);
         }
@@ -240,6 +265,21 @@ public class KeyMaster {
         JsonObject response = new JsonObject();
         response.addProperty("error", "unknown service: " + serviceType);
         return response;
+    }
+
+    private String buildRequestDetail(String serviceType, String method, JsonArray params) {
+        String label = switch (serviceType + "." + method) {
+            case "ssh.sign_request" -> "SSH signing request";
+            case "ssh.request_identities" -> "SSH identity listing";
+            case "gpg.sign_request" -> "GPG signing request";
+            case "gpg.request_identities" -> "GPG identity listing";
+            case "gpg.get_public_cert" -> "GPG public certificate export";
+            default -> serviceType + "." + method;
+        };
+        if (currentIdentity != null) {
+            return label + " for " + currentIdentity;
+        }
+        return label;
     }
 
     private JsonObject handleSshRequest(String method, JsonArray params) {
