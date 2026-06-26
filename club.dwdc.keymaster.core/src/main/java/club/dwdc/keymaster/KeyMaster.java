@@ -1,21 +1,22 @@
 package club.dwdc.keymaster;
 
-import club.dwdc.keyexporter.core.OpenPgpKeySeeds;
-import club.dwdc.keyexporter.core.OpenPgpMetadata;
-import club.dwdc.keyexporter.core.OpenPgpSeedDeriver;
-import club.dwdc.keyexporter.openpgp.OpenPgpExport;
-import club.dwdc.keyexporter.openpgp.OpenPgpExporter;
 import club.dwdc.keyvault.core.AlgField;
 import club.dwdc.keyvault.core.Bip32KeyDerivator;
 import club.dwdc.keyvault.core.ConfigField;
 import club.dwdc.keyvault.core.KeyVault;
 import club.dwdc.keyvault.core.Protocol;
 import club.dwdc.keyvault.core.VaultResult;
+import club.dwdc.keyexporter.core.OpenPgpKeySeeds;
+import club.dwdc.keyexporter.core.OpenPgpMetadata;
+import club.dwdc.keyexporter.core.OpenPgpSeedDeriver;
+import club.dwdc.keyexporter.openpgp.OpenPgpExport;
+import club.dwdc.keyexporter.openpgp.OpenPgpExporter;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import nostr.util.NostrUtil;
 import org.bitcoinj.crypto.ChildNumber;
 import org.bitcoinj.crypto.HDPath;
+import org.bouncycastle.openpgp.PGPException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -25,8 +26,6 @@ import java.time.Instant;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
-
-import org.bouncycastle.openpgp.PGPException;
 
 /**
  * KeyMaster — controller and security authority for the DWDC Key System.
@@ -42,7 +41,6 @@ public class KeyMaster {
     private static final int PURPOSE = 44 | H;
     private static final int NOSTR_COIN = Protocol.NOSTR.coinType() | H;
     private static final int SSH_COIN = Protocol.SSH.coinType() | H;
-    private static final int OPENPGP_COIN = Protocol.OPENPGP.coinType() | H;
     private static final int ALG_SCHNORR =
             new AlgField(AlgField.ALG_SCHNORR, 0, 0).toIndex() | H;
     private static final int ALG_ED25519_USER_AUTH =
@@ -58,13 +56,14 @@ public class KeyMaster {
     private byte[] pubKey;
     private String pubKeyHex;
     private String currentIdentity;
-    private String gpgPublicCertArmor;
 
     /** BIP-32 derivator for realm (transport) keys — separate from vault identity keys. */
     private final Bip32KeyDerivator realmDerivator;
 
     private SshServiceHandler sshHandler;
     private ServiceChannel sshChannel;
+    private GpgServiceHandler gpgHandler;
+    private ServiceChannel gpgChannel;
 
     private NostrTransport transport;
     private String avatarLoginXpub;
@@ -112,6 +111,11 @@ public class KeyMaster {
                     ? new ApprovalHandlerAdapter(handler, "ssh")
                     : null);
         }
+        if (gpgHandler != null) {
+            gpgHandler.setApprovalUI(handler != null
+                    ? new ApprovalHandlerAdapter(handler, "gpg")
+                    : null);
+        }
     }
 
     /**
@@ -140,30 +144,55 @@ public class KeyMaster {
         // Generate GPG public cert for this identity.
         // Fixed timestamp for deterministic fingerprints (same identity → same cert).
         // Uses epoch+1 because GnuPG 2.2.x rejects back-signatures with timestamp 0.
+        String gpgPublicCertArmor;
         try {
             OpenPgpKeySeeds gpgSeeds = OpenPgpSeedDeriver.derive(vault, identity);
             OpenPgpMetadata gpgMetadata = OpenPgpMetadata.create(
                     identity, identity, identity, Instant.ofEpochSecond(1));
             OpenPgpExport gpgExport = OpenPgpExporter.export(
                     gpgSeeds, gpgMetadata, "keymaster".toCharArray());
-            this.gpgPublicCertArmor = gpgExport.publicKeyArmor();
+            gpgPublicCertArmor = gpgExport.publicKeyArmor();
         } catch (PGPException | IOException e) {
             throw new IllegalStateException("Failed to generate GPG cert", e);
         }
+
+        int mangledIdentity = Bip32KeyDerivator.mangle(identity);
+        var serviceGson = ServiceChannel.createGson();
 
         // Build SSH service handler
         HDPath sshHdPath = HDPath.m(
                 new ChildNumber(44, true),
                 new ChildNumber(Protocol.SSH.coinType(), true),
-                new ChildNumber(Bip32KeyDerivator.mangle(identity), true),
+                new ChildNumber(mangledIdentity, true),
                 new ChildNumber(new AlgField(AlgField.ALG_ED25519, 0, 0).toIndex(), true),
                 new ChildNumber(new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex(), true)
         );
         KeyEntry sshKey = new KeyEntry(sshHdPath, Map.of("comment", identity));
         this.sshHandler = new SshServiceHandler(vault, List.of(sshKey));
-        this.sshChannel = new ServiceChannel(sshHandler, ServiceChannel.createGson());
+        this.sshChannel = new ServiceChannel(sshHandler, serviceGson);
         if (approvalHandler != null) {
             sshHandler.setApprovalUI(new ApprovalHandlerAdapter(approvalHandler, "ssh"));
+        }
+
+        // Build GPG service handler
+        String[] roleNames = {"certification", "signing"};
+        List<KeyEntry> gpgKeys = new java.util.ArrayList<>();
+        for (int role = 0; role < roleNames.length; role++) {
+            HDPath gpgHdPath = HDPath.m(
+                    new ChildNumber(44, true),
+                    new ChildNumber(Protocol.OPENPGP.coinType(), true),
+                    new ChildNumber(mangledIdentity, true),
+                    new ChildNumber(new AlgField(AlgField.ALG_ED25519, 0, role).toIndex(), true),
+                    new ChildNumber(new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex(), true)
+            );
+            gpgKeys.add(new KeyEntry(gpgHdPath, Map.of(
+                    "label", identity + " / " + roleNames[role],
+                    "key_type", "ed25519")));
+        }
+        this.gpgHandler = new GpgServiceHandler(vault, gpgKeys, gpgPublicCertArmor);
+        this.gpgChannel = new ServiceChannel(gpgHandler, serviceGson);
+        if (approvalHandler != null) {
+            gpgHandler.setApprovalUI(new ApprovalHandlerAdapter(approvalHandler, "gpg"));
         }
 
         log.info("KeyMaster identity: {}", pubKeyHex);
@@ -268,22 +297,10 @@ public class KeyMaster {
     private JsonObject handleServiceRequest(String serviceType, String method, JsonArray params) {
         log.info("Service request: {}.{}", serviceType, method);
 
-        // SSH approval is handled internally by SshServiceHandler
+        // SSH and GPG approval is handled internally by their service handlers
         if ("ssh".equals(serviceType)) {
             return handleSshRequest(method, params);
         }
-
-        if (approvalHandler != null) {
-            String requestType = serviceType + "." + method;
-            String detail = buildRequestDetail(serviceType, method, params);
-            if (!approvalHandler.approve(requestType, detail)) {
-                log.info("Request denied by approval handler: {}", requestType);
-                JsonObject response = new JsonObject();
-                response.addProperty("error", "request denied by user");
-                return response;
-            }
-        }
-
         if ("gpg".equals(serviceType)) {
             return handleGpgRequest(method, params);
         }
@@ -291,21 +308,6 @@ public class KeyMaster {
         JsonObject response = new JsonObject();
         response.addProperty("error", "unknown service: " + serviceType);
         return response;
-    }
-
-    private String buildRequestDetail(String serviceType, String method, JsonArray params) {
-        String label = switch (serviceType + "." + method) {
-            case "ssh.sign_request" -> "SSH signing request";
-            case "ssh.request_identities" -> "SSH identity listing";
-            case "gpg.sign_request" -> "GPG signing request";
-            case "gpg.request_identities" -> "GPG identity listing";
-            case "gpg.get_public_cert" -> "GPG public certificate export";
-            default -> serviceType + "." + method;
-        };
-        if (currentIdentity != null) {
-            return label + " for " + currentIdentity;
-        }
-        return label;
     }
 
     private JsonObject handleSshRequest(String method, JsonArray params) {
@@ -327,134 +329,22 @@ public class KeyMaster {
         return response;
     }
 
-    // ==================== GPG service handling ====================
-
     private JsonObject handleGpgRequest(String method, JsonArray params) {
-        return switch (method) {
-            case "request_identities" -> handleGpgRequestIdentities();
-            case "sign_request" -> handleGpgSignRequest(params);
-            case "get_public_cert" -> handleGpgGetPublicCert();
-            default -> {
-                JsonObject response = new JsonObject();
-                response.addProperty("error", "unknown GPG method: " + method);
-                yield response;
-            }
-        };
-    }
-
-    private JsonObject handleGpgRequestIdentities() {
-        if (currentIdentity == null) {
+        if (gpgChannel == null) {
             JsonObject response = new JsonObject();
             response.addProperty("error", "no identity set");
             return response;
         }
-
-        int identityIndex = Bip32KeyDerivator.mangle(currentIdentity) | H;
-
-        JsonArray identities = new JsonArray();
-
-        // Derive Ed25519 keys for certification (role=0) and signing (role=1) roles
-        String[] roleNames = {"certification", "signing"};
-        for (int role = 0; role < 2; role++) {
-            int algorithm = new AlgField(AlgField.ALG_ED25519, 0, role).toIndex() | H;
-            int config = new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex() | H;
-            int[] gpgPath = new int[]{PURPOSE, OPENPGP_COIN, identityIndex, algorithm, config};
-
-            VaultResult pubResult = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, gpgPath);
-            if (!pubResult.isOk()) {
-                log.error("Failed to derive GPG Ed25519 key for role {}: status={}", role, pubResult.status());
-                continue;
-            }
-
-            byte[] ed25519PubKey = pubResult.data();
-            String pubKeyB64 = Base64.getEncoder().encodeToString(ed25519PubKey);
-
-            JsonObject identity = new JsonObject();
-            identity.addProperty("key_type", "ed25519");
-            identity.addProperty("public_key", pubKeyB64);
-            identity.addProperty("label", currentIdentity + " / " + roleNames[role]);
-
-            identities.add(identity);
-            log.info("GPG identity: {} / {} ({} bytes)", currentIdentity, roleNames[role], ed25519PubKey.length);
+        JsonObject response = gpgChannel.dispatch(method, params);
+        // Wrap identities list for backward-compatible wire format:
+        // old format: {"result": {"identities": [...]}}
+        // ServiceChannel: {"result": [...]}
+        if ("request_identities".equals(method) && response.has("result")
+                && response.get("result").isJsonArray()) {
+            JsonObject wrapper = new JsonObject();
+            wrapper.add("identities", response.get("result"));
+            response.add("result", wrapper);
         }
-
-        JsonObject result = new JsonObject();
-        result.add("identities", identities);
-
-        JsonObject response = new JsonObject();
-        response.add("result", result);
-        return response;
-    }
-
-    private JsonObject handleGpgGetPublicCert() {
-        if (gpgPublicCertArmor == null) {
-            JsonObject response = new JsonObject();
-            response.addProperty("error", "no GPG cert available");
-            return response;
-        }
-
-        JsonObject result = new JsonObject();
-        result.addProperty("public_cert_armor", gpgPublicCertArmor);
-
-        JsonObject response = new JsonObject();
-        response.add("result", result);
-        return response;
-    }
-
-    private JsonObject handleGpgSignRequest(JsonArray params) {
-        if (currentIdentity == null) {
-            JsonObject response = new JsonObject();
-            response.addProperty("error", "no identity set");
-            return response;
-        }
-
-        JsonObject reqParams = params.get(0).getAsJsonObject();
-        String publicKeyB64 = reqParams.get("public_key").getAsString();
-        String dataB64 = reqParams.get("data").getAsString();
-
-        byte[] requestedPubKey = Base64.getDecoder().decode(publicKeyB64);
-        byte[] data = Base64.getDecoder().decode(dataB64);
-
-        int identityIndex = Bip32KeyDerivator.mangle(currentIdentity) | H;
-
-        // Try to match the requested public key against derived keys at roles 0 and 1
-        for (int role = 0; role < 2; role++) {
-            int algorithm = new AlgField(AlgField.ALG_ED25519, 0, role).toIndex() | H;
-            int config = new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex() | H;
-            int[] gpgPath = new int[]{PURPOSE, OPENPGP_COIN, identityIndex, algorithm, config};
-
-            VaultResult pubResult = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, gpgPath);
-            if (!pubResult.isOk()) {
-                continue;
-            }
-
-            if (java.util.Arrays.equals(pubResult.data(), requestedPubKey)) {
-                // Match found — sign with this key's path
-                VaultResult signResult = vault.execute(KeyVault.FN_SIGN, data, gpgPath);
-                if (!signResult.isOk()) {
-                    log.error("GPG sign failed for role {}: status={}", role, signResult.status());
-                    JsonObject response = new JsonObject();
-                    response.addProperty("error", "sign failed");
-                    return response;
-                }
-
-                byte[] signature = signResult.data();
-                String signatureB64 = Base64.getEncoder().encodeToString(signature);
-
-                log.info("GPG sign: signed {} bytes for {} (role={})", data.length, currentIdentity, role);
-
-                JsonObject result = new JsonObject();
-                result.addProperty("signature", signatureB64);
-
-                JsonObject response = new JsonObject();
-                response.add("result", result);
-                return response;
-            }
-        }
-
-        log.error("GPG sign: public key does not match any derived key");
-        JsonObject response = new JsonObject();
-        response.addProperty("error", "key-mismatch");
         return response;
     }
 
