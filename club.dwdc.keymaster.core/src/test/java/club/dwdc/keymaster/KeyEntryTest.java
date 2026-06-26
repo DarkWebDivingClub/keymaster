@@ -82,6 +82,23 @@ class KeyEntryTest {
     }
 
     @Test
+    void toVaultPathIncludesHardenedBit() {
+        KeyEntry entry = new KeyEntry(sshPath("alice"), Map.of());
+        int[] vaultPath = entry.toVaultPath();
+        for (int element : vaultPath) {
+            assertTrue((element & 0x80000000) != 0,
+                    "Expected hardened bit set, got: " + Integer.toHexString(element));
+        }
+    }
+
+    @Test
+    void toVaultPathLength() {
+        KeyEntry entry = new KeyEntry(sshPath("alice"), Map.of());
+        int[] vaultPath = entry.toVaultPath();
+        assertEquals(5, vaultPath.length);
+    }
+
+    @Test
     void emptyMetadata() {
         HDPath path = sshPath("alice");
         KeyEntry withNull = new KeyEntry(path, null);

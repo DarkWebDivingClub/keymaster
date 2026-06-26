@@ -25,6 +25,18 @@ public record KeyEntry(HDPath path, Map<String, String> metadata) {
     /** Role field (lower 8 bits of level 4). */
     public int role()      { return path.get(3).num() & 0xFF; }
 
+    /**
+     * Convert the derivation path to a raw int array suitable for {@link club.dwdc.keyvault.core.KeyVault#execute}.
+     * Each int includes the hardened bit (0x80000000) when set.
+     */
+    public int[] toVaultPath() {
+        int[] result = new int[path.size()];
+        for (int idx = 0; idx < path.size(); idx++) {
+            result[idx] = path.get(idx).i();
+        }
+        return result;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;

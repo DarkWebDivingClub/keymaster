@@ -1,12 +1,22 @@
 package club.dwdc.keymaster;
 
+import club.dwdc.keyvault.core.AlgField;
 import club.dwdc.keyvault.core.Bip32KeyDerivator;
 import club.dwdc.keyvault.core.Bip32KeyVault;
+import club.dwdc.keyvault.core.KeyVault;
+import club.dwdc.keyvault.core.Protocol;
 import club.dwdc.keyvault.nostr.KeyVaultIdentity;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
 import nostr.util.NostrUtil;
+import org.bitcoinj.crypto.ChildNumber;
+import org.bitcoinj.crypto.HDPath;
 import org.junit.jupiter.api.Test;
 
+import java.util.Base64;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -187,6 +197,126 @@ class KeyMasterTest {
         String xpub = kd.deriveXpub(0);
         String npub = NostrTransport.xpubToNpub(xpub);
         assertEquals(64, npub.length());
+    }
+
+    // ── SSH service handler integration tests ────────────────────────────
+
+    @Test
+    void sshIdentities_throughKeyMaster_matchesOldBehavior() {
+        // Pre-refactor format: {"result": {"identities": [{"key_blob": "...", "comment": "..."}]}}
+        var vault = new Bip32KeyVault(TEST_MNEMONIC);
+        var km = new KeyMaster(vault);
+        km.createIdentity("alice@atlanta.com");
+
+        // Simulate a service request through the handler
+        JsonObject response = invokeSshRequest(km, "request_identities", null);
+
+        // Must have result.identities array
+        assertTrue(response.has("result"), "response must have 'result'");
+        JsonObject result = response.getAsJsonObject("result");
+        assertTrue(result.has("identities"), "result must have 'identities'");
+        JsonArray identities = result.getAsJsonArray("identities");
+        assertEquals(1, identities.size());
+
+        JsonObject identity = identities.get(0).getAsJsonObject();
+        assertTrue(identity.has("key_blob"));
+        assertTrue(identity.has("comment"));
+        assertEquals("alice@atlanta.com", identity.get("comment").getAsString());
+
+        // Verify key_blob matches vault-derived SSH key
+        int H = 0x80000000;
+        int identityIndex = Bip32KeyDerivator.mangle("alice@atlanta.com") | H;
+        int[] sshPath = {44 | H, Protocol.SSH.coinType() | H, identityIndex,
+                new AlgField(AlgField.ALG_ED25519, 0, 0).toIndex() | H, 0 | H};
+        var pubResult = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, sshPath);
+        byte[] expectedBlob = SshServiceHandler.buildSshEd25519KeyBlob(pubResult.data());
+        String expectedB64 = Base64.getEncoder().encodeToString(expectedBlob);
+        assertEquals(expectedB64, identity.get("key_blob").getAsString());
+    }
+
+    @Test
+    void sshSign_throughKeyMaster_matchesOldBehavior() {
+        var vault = new Bip32KeyVault(TEST_MNEMONIC);
+        var km = new KeyMaster(vault);
+        km.setApprovalHandler((type, detail) -> true);
+        km.createIdentity("alice@atlanta.com");
+
+        // First get the key blob
+        JsonObject idResponse = invokeSshRequest(km, "request_identities", null);
+        String keyBlobB64 = idResponse.getAsJsonObject("result")
+                .getAsJsonArray("identities")
+                .get(0).getAsJsonObject()
+                .get("key_blob").getAsString();
+
+        // Sign with it
+        String dataB64 = Base64.getEncoder().encodeToString("test data".getBytes());
+        JsonObject param = new JsonObject();
+        param.addProperty("key_blob", keyBlobB64);
+        param.addProperty("data", dataB64);
+        JsonArray params = new JsonArray();
+        params.add(param);
+
+        JsonObject response = invokeSshRequest(km, "sign_request", params);
+
+        // Must have result.signature and result.key_type
+        assertTrue(response.has("result"), "response must have 'result'");
+        JsonObject result = response.getAsJsonObject("result");
+        assertTrue(result.has("signature"));
+        assertTrue(result.has("key_type"));
+        assertEquals("ssh-ed25519", result.get("key_type").getAsString());
+
+        // Signature should be 64 bytes (Ed25519)
+        byte[] sig = Base64.getDecoder().decode(result.get("signature").getAsString());
+        assertEquals(64, sig.length);
+    }
+
+    @Test
+    void sshApproval_bridgesToHandler() {
+        var vault = new Bip32KeyVault(TEST_MNEMONIC);
+        var km = new KeyMaster(vault);
+
+        AtomicBoolean handlerCalled = new AtomicBoolean(false);
+        km.setApprovalHandler((type, detail) -> {
+            handlerCalled.set(true);
+            return false; // deny
+        });
+        km.createIdentity("alice@atlanta.com");
+
+        // Get the key blob first (request_identities has APPROVE policy, no handler call)
+        JsonObject idResponse = invokeSshRequest(km, "request_identities", null);
+        String keyBlobB64 = idResponse.getAsJsonObject("result")
+                .getAsJsonArray("identities")
+                .get(0).getAsJsonObject()
+                .get("key_blob").getAsString();
+
+        // Reset flag and try signing (ASK policy → flows through ApprovalHandler)
+        handlerCalled.set(false);
+        JsonObject param = new JsonObject();
+        param.addProperty("key_blob", keyBlobB64);
+        param.addProperty("data", Base64.getEncoder().encodeToString("data".getBytes()));
+        JsonArray params = new JsonArray();
+        params.add(param);
+
+        JsonObject response = invokeSshRequest(km, "sign_request", params);
+
+        assertTrue(handlerCalled.get(), "ApprovalHandler should have been called");
+        assertTrue(response.has("error"));
+        assertEquals("request denied by user", response.get("error").getAsString());
+    }
+
+    /**
+     * Invoke the SSH request handler on KeyMaster via the package-private service handler path.
+     * Uses reflection to access the private handleServiceRequest method, simulating transport dispatch.
+     */
+    private static JsonObject invokeSshRequest(KeyMaster km, String method, JsonArray params) {
+        try {
+            var m = KeyMaster.class.getDeclaredMethod(
+                    "handleServiceRequest", String.class, String.class, JsonArray.class);
+            m.setAccessible(true);
+            return (JsonObject) m.invoke(km, "ssh", method, params);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
     }
 
     @Test

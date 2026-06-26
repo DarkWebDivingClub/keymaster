@@ -14,15 +14,17 @@ import club.dwdc.keyvault.core.VaultResult;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import nostr.util.NostrUtil;
+import org.bitcoinj.crypto.ChildNumber;
+import org.bitcoinj.crypto.HDPath;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.Base64;
+import java.util.List;
+import java.util.Map;
 
 import org.bouncycastle.openpgp.PGPException;
 
@@ -60,6 +62,9 @@ public class KeyMaster {
 
     /** BIP-32 derivator for realm (transport) keys — separate from vault identity keys. */
     private final Bip32KeyDerivator realmDerivator;
+
+    private SshServiceHandler sshHandler;
+    private ServiceChannel sshChannel;
 
     private NostrTransport transport;
     private String avatarLoginXpub;
@@ -102,6 +107,11 @@ public class KeyMaster {
      */
     public void setApprovalHandler(ApprovalHandler handler) {
         this.approvalHandler = handler;
+        if (sshHandler != null) {
+            sshHandler.setApprovalUI(handler != null
+                    ? new ApprovalHandlerAdapter(handler, "ssh")
+                    : null);
+        }
     }
 
     /**
@@ -139,6 +149,21 @@ public class KeyMaster {
             this.gpgPublicCertArmor = gpgExport.publicKeyArmor();
         } catch (PGPException | IOException e) {
             throw new IllegalStateException("Failed to generate GPG cert", e);
+        }
+
+        // Build SSH service handler
+        HDPath sshHdPath = HDPath.m(
+                new ChildNumber(44, true),
+                new ChildNumber(Protocol.SSH.coinType(), true),
+                new ChildNumber(Bip32KeyDerivator.mangle(identity), true),
+                new ChildNumber(new AlgField(AlgField.ALG_ED25519, 0, 0).toIndex(), true),
+                new ChildNumber(new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex(), true)
+        );
+        KeyEntry sshKey = new KeyEntry(sshHdPath, Map.of("comment", identity));
+        this.sshHandler = new SshServiceHandler(vault, List.of(sshKey));
+        this.sshChannel = new ServiceChannel(sshHandler, ServiceChannel.createGson());
+        if (approvalHandler != null) {
+            sshHandler.setApprovalUI(new ApprovalHandlerAdapter(approvalHandler, "ssh"));
         }
 
         log.info("KeyMaster identity: {}", pubKeyHex);
@@ -243,6 +268,11 @@ public class KeyMaster {
     private JsonObject handleServiceRequest(String serviceType, String method, JsonArray params) {
         log.info("Service request: {}.{}", serviceType, method);
 
+        // SSH approval is handled internally by SshServiceHandler
+        if ("ssh".equals(serviceType)) {
+            return handleSshRequest(method, params);
+        }
+
         if (approvalHandler != null) {
             String requestType = serviceType + "." + method;
             String detail = buildRequestDetail(serviceType, method, params);
@@ -252,10 +282,6 @@ public class KeyMaster {
                 response.addProperty("error", "request denied by user");
                 return response;
             }
-        }
-
-        if ("ssh".equals(serviceType)) {
-            return handleSshRequest(method, params);
         }
 
         if ("gpg".equals(serviceType)) {
@@ -283,112 +309,21 @@ public class KeyMaster {
     }
 
     private JsonObject handleSshRequest(String method, JsonArray params) {
-        return switch (method) {
-            case "request_identities" -> handleSshRequestIdentities();
-            case "sign_request" -> handleSshSignRequest(params);
-            default -> {
-                JsonObject response = new JsonObject();
-                response.addProperty("error", "unknown SSH method: " + method);
-                yield response;
-            }
-        };
-    }
-
-    private JsonObject handleSshRequestIdentities() {
-        if (currentIdentity == null) {
+        if (sshChannel == null) {
             JsonObject response = new JsonObject();
             response.addProperty("error", "no identity set");
             return response;
         }
-
-        // Derive SSH Ed25519 key using the same identity
-        int identityIndex = Bip32KeyDerivator.mangle(currentIdentity) | H;
-        int[] sshPath = new int[]{PURPOSE, SSH_COIN, identityIndex, ALG_ED25519_USER_AUTH, DEFAULT_CONFIG};
-
-        VaultResult pubResult = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, sshPath);
-        if (!pubResult.isOk()) {
-            log.error("Failed to derive SSH Ed25519 key: status={}", pubResult.status());
-            JsonObject response = new JsonObject();
-            response.addProperty("error", "failed to derive SSH key");
-            return response;
+        JsonObject response = sshChannel.dispatch(method, params);
+        // Wrap identities list for backward-compatible wire format:
+        // old format: {"result": {"identities": [...]}}
+        // ServiceChannel: {"result": [...]}
+        if ("request_identities".equals(method) && response.has("result")
+                && response.get("result").isJsonArray()) {
+            JsonObject wrapper = new JsonObject();
+            wrapper.add("identities", response.get("result"));
+            response.add("result", wrapper);
         }
-
-        byte[] ed25519PubKey = pubResult.data();
-        byte[] keyBlob = buildSshEd25519KeyBlob(ed25519PubKey);
-        String keyBlobB64 = Base64.getEncoder().encodeToString(keyBlob);
-
-        log.info("SSH identity: {} ({} bytes key blob)", currentIdentity, keyBlob.length);
-
-        JsonObject identity = new JsonObject();
-        identity.addProperty("key_blob", keyBlobB64);
-        identity.addProperty("comment", currentIdentity);
-
-        JsonArray identities = new JsonArray();
-        identities.add(identity);
-
-        JsonObject result = new JsonObject();
-        result.add("identities", identities);
-
-        JsonObject response = new JsonObject();
-        response.add("result", result);
-        return response;
-    }
-
-    private JsonObject handleSshSignRequest(JsonArray params) {
-        if (currentIdentity == null) {
-            JsonObject response = new JsonObject();
-            response.addProperty("error", "no identity set");
-            return response;
-        }
-
-        JsonObject reqParams = params.get(0).getAsJsonObject();
-        String keyBlobB64 = reqParams.get("key_blob").getAsString();
-        String dataB64 = reqParams.get("data").getAsString();
-
-        byte[] data = Base64.getDecoder().decode(dataB64);
-
-        // Derive SSH Ed25519 key path
-        int identityIndex = Bip32KeyDerivator.mangle(currentIdentity) | H;
-        int[] sshPath = new int[]{PURPOSE, SSH_COIN, identityIndex, ALG_ED25519_USER_AUTH, DEFAULT_CONFIG};
-
-        // Verify key_blob matches our derived key
-        VaultResult pubResult = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, sshPath);
-        if (!pubResult.isOk()) {
-            log.error("Failed to derive SSH Ed25519 key for signing: status={}", pubResult.status());
-            JsonObject response = new JsonObject();
-            response.addProperty("error", "failed to derive SSH key");
-            return response;
-        }
-
-        byte[] expectedKeyBlob = buildSshEd25519KeyBlob(pubResult.data());
-        String expectedKeyBlobB64 = Base64.getEncoder().encodeToString(expectedKeyBlob);
-        if (!expectedKeyBlobB64.equals(keyBlobB64)) {
-            log.error("SSH sign: key_blob mismatch (expected={}, got={})", expectedKeyBlobB64, keyBlobB64);
-            JsonObject response = new JsonObject();
-            response.addProperty("error", "key-mismatch");
-            return response;
-        }
-
-        // Sign using KeyVault
-        VaultResult signResult = vault.execute(KeyVault.FN_SIGN, data, sshPath);
-        if (!signResult.isOk()) {
-            log.error("SSH sign failed: status={}", signResult.status());
-            JsonObject response = new JsonObject();
-            response.addProperty("error", "sign failed");
-            return response;
-        }
-
-        byte[] signature = signResult.data();
-        String signatureB64 = Base64.getEncoder().encodeToString(signature);
-
-        log.info("SSH sign: signed {} bytes for {}", data.length, currentIdentity);
-
-        JsonObject result = new JsonObject();
-        result.addProperty("signature", signatureB64);
-        result.addProperty("key_type", "ssh-ed25519");
-
-        JsonObject response = new JsonObject();
-        response.add("result", result);
         return response;
     }
 
@@ -539,21 +474,7 @@ public class KeyMaster {
             throw new IllegalStateException("Failed to derive SSH key: status=" + pubResult.status());
         }
 
-        byte[] keyBlob = buildSshEd25519KeyBlob(pubResult.data());
+        byte[] keyBlob = SshServiceHandler.buildSshEd25519KeyBlob(pubResult.data());
         return "ssh-ed25519 " + Base64.getEncoder().encodeToString(keyBlob) + " " + currentIdentity;
-    }
-
-    /**
-     * Build an SSH Ed25519 key blob in SSH wire format:
-     * string("ssh-ed25519") + string(pubkey)
-     */
-    static byte[] buildSshEd25519KeyBlob(byte[] pubKey) {
-        byte[] algo = "ssh-ed25519".getBytes(StandardCharsets.UTF_8);
-        ByteBuffer buf = ByteBuffer.allocate(4 + algo.length + 4 + pubKey.length);
-        buf.putInt(algo.length);
-        buf.put(algo);
-        buf.putInt(pubKey.length);
-        buf.put(pubKey);
-        return buf.array();
     }
 }
