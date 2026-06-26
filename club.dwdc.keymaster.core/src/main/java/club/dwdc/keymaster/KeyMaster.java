@@ -60,9 +60,8 @@ public class KeyMaster {
     /** BIP-32 derivator for realm (transport) keys — separate from vault identity keys. */
     private final Bip32KeyDerivator realmDerivator;
 
-    private SshServiceHandler sshHandler;
+    private Session session;
     private ServiceChannel sshChannel;
-    private GpgServiceHandler gpgHandler;
     private ServiceChannel gpgChannel;
 
     private NostrTransport transport;
@@ -106,15 +105,16 @@ public class KeyMaster {
      */
     public void setApprovalHandler(ApprovalHandler handler) {
         this.approvalHandler = handler;
-        if (sshHandler != null) {
-            sshHandler.setApprovalUI(handler != null
-                    ? new ApprovalHandlerAdapter(handler, "ssh")
-                    : null);
-        }
-        if (gpgHandler != null) {
-            gpgHandler.setApprovalUI(handler != null
-                    ? new ApprovalHandlerAdapter(handler, "gpg")
-                    : null);
+        if (session != null) {
+            for (int coinType : session.getHandlerCoinTypes()) {
+                AbstractServiceHandler h = session.getHandler(coinType);
+                if (h != null) {
+                    String serviceType = coinType == Protocol.SSH.coinType() ? "ssh" : "gpg";
+                    h.setApprovalUI(handler != null
+                            ? new ApprovalHandlerAdapter(handler, serviceType)
+                            : null);
+                }
+            }
         }
     }
 
@@ -168,8 +168,7 @@ public class KeyMaster {
                 new ChildNumber(new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex(), true)
         );
         KeyEntry sshKey = new KeyEntry(sshHdPath, Map.of("comment", identity));
-        this.sshHandler = new SshServiceHandler(vault, List.of(sshKey));
-        this.sshChannel = new ServiceChannel(sshHandler, serviceGson);
+        SshServiceHandler sshHandler = new SshServiceHandler(vault, List.of(sshKey));
         if (approvalHandler != null) {
             sshHandler.setApprovalUI(new ApprovalHandlerAdapter(approvalHandler, "ssh"));
         }
@@ -189,11 +188,18 @@ public class KeyMaster {
                     "label", identity + " / " + roleNames[role],
                     "key_type", "ed25519")));
         }
-        this.gpgHandler = new GpgServiceHandler(vault, gpgKeys, gpgPublicCertArmor);
-        this.gpgChannel = new ServiceChannel(gpgHandler, serviceGson);
+        GpgServiceHandler gpgHandler = new GpgServiceHandler(vault, gpgKeys, gpgPublicCertArmor);
         if (approvalHandler != null) {
             gpgHandler.setApprovalUI(new ApprovalHandlerAdapter(approvalHandler, "gpg"));
         }
+
+        // Populate session with handlers
+        this.session = new Session();
+        session.putHandler(Protocol.SSH.coinType(), sshHandler);
+        session.putHandler(Protocol.OPENPGP.coinType(), gpgHandler);
+
+        this.sshChannel = new ServiceChannel(sshHandler, serviceGson);
+        this.gpgChannel = new ServiceChannel(gpgHandler, serviceGson);
 
         log.info("KeyMaster identity: {}", pubKeyHex);
     }
