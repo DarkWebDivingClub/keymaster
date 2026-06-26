@@ -25,16 +25,45 @@ import java.util.Map;
  */
 public class ServiceChannel {
 
-    private final AbstractServiceHandler handler;
+    private AbstractServiceHandler handler;
     private final Gson gson;
-    private final Map<String, MethodBinding> bindings;
+    private Map<String, MethodBinding> bindings;
+
+    // Session-mode fields (null in direct mode)
+    private final Session session;
+    private final int coinType;
 
     record MethodBinding(Method method, Class<?> paramType) {}
 
+    /**
+     * Direct constructor — binds to a fixed handler.
+     */
     public ServiceChannel(AbstractServiceHandler handler, Gson gson) {
         this.handler = handler;
         this.gson = gson;
         this.bindings = buildBindings(handler);
+        this.session = null;
+        this.coinType = 0;
+    }
+
+    /**
+     * Session-based constructor — resolves handler lazily from the session.
+     *
+     * <p>On each {@link #dispatch} call, the handler is resolved via
+     * {@link Session#getHandler(int)}. If the handler has changed since
+     * the last call, bindings are rebuilt automatically.
+     *
+     * @param session  session containing handlers
+     * @param coinType protocol coin type to look up
+     * @param gson     Gson instance for serialization
+     */
+    public ServiceChannel(Session session, int coinType, Gson gson) {
+        this.session = session;
+        this.coinType = coinType;
+        this.gson = gson;
+        // Resolve handler eagerly for the initial state
+        this.handler = session.getHandler(coinType);
+        this.bindings = handler != null ? buildBindings(handler) : new HashMap<>();
     }
 
     /**
@@ -45,6 +74,20 @@ public class ServiceChannel {
      * @return JSON response with either {@code result} or {@code error}
      */
     public JsonObject dispatch(String method, JsonArray params) {
+        // In session mode, re-resolve the handler on each call
+        if (session != null) {
+            AbstractServiceHandler current = session.getHandler(coinType);
+            if (current == null) {
+                JsonObject response = new JsonObject();
+                response.addProperty("error", "no handler for coin type " + coinType);
+                return response;
+            }
+            if (current != handler) {
+                handler = current;
+                bindings = buildBindings(handler);
+            }
+        }
+
         MethodBinding binding = bindings.get(method);
         if (binding == null) {
             JsonObject response = new JsonObject();

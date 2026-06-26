@@ -305,15 +305,19 @@ class KeyMasterTest {
     }
 
     /**
-     * Invoke the SSH request handler on KeyMaster via the package-private service handler path.
-     * Uses reflection to access the private handleServiceRequest method, simulating transport dispatch.
+     * Invoke the SSH request handler via NipxxConnector, simulating transport dispatch.
+     * Constructs a connector from KeyMaster's session (via reflection) and calls
+     * handleServiceRequest directly (package-private).
      */
     private static JsonObject invokeSshRequest(KeyMaster km, String method, JsonArray params) {
         try {
-            var m = KeyMaster.class.getDeclaredMethod(
-                    "handleServiceRequest", String.class, String.class, JsonArray.class);
-            m.setAccessible(true);
-            return (JsonObject) m.invoke(km, "ssh", method, params);
+            var sessionField = KeyMaster.class.getDeclaredField("session");
+            sessionField.setAccessible(true);
+            Session session = (Session) sessionField.get(km);
+
+            NipxxConnector connector = new NipxxConnector(
+                    session, new Bip32KeyDerivator(new byte[64]), "", new byte[32]);
+            return connector.handleServiceRequest("ssh", method, params);
         } catch (Exception e) {
             throw new RuntimeException(e);
         }

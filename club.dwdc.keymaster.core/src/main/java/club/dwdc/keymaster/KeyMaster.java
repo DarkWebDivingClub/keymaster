@@ -11,8 +11,6 @@ import club.dwdc.keyexporter.core.OpenPgpMetadata;
 import club.dwdc.keyexporter.core.OpenPgpSeedDeriver;
 import club.dwdc.keyexporter.openpgp.OpenPgpExport;
 import club.dwdc.keyexporter.openpgp.OpenPgpExporter;
-import com.google.gson.JsonArray;
-import com.google.gson.JsonObject;
 import nostr.util.NostrUtil;
 import org.bitcoinj.crypto.ChildNumber;
 import org.bitcoinj.crypto.HDPath;
@@ -61,11 +59,7 @@ public class KeyMaster {
     private final Bip32KeyDerivator realmDerivator;
 
     private Session session;
-    private ServiceChannel sshChannel;
-    private ServiceChannel gpgChannel;
-
-    private NostrTransport transport;
-    private String avatarLoginXpub;
+    private Connector connector;
 
     /**
      * Create a KeyMaster from a ready-to-use KeyVault.
@@ -157,7 +151,6 @@ public class KeyMaster {
         }
 
         int mangledIdentity = Bip32KeyDerivator.mangle(identity);
-        var serviceGson = ServiceChannel.createGson();
 
         // Build SSH service handler
         HDPath sshHdPath = HDPath.m(
@@ -197,9 +190,6 @@ public class KeyMaster {
         this.session = new Session();
         session.putHandler(Protocol.SSH.coinType(), sshHandler);
         session.putHandler(Protocol.OPENPGP.coinType(), gpgHandler);
-
-        this.sshChannel = new ServiceChannel(sshHandler, serviceGson);
-        this.gpgChannel = new ServiceChannel(gpgHandler, serviceGson);
 
         log.info("KeyMaster identity: {}", pubKeyHex);
     }
@@ -257,8 +247,8 @@ public class KeyMaster {
     /**
      * Attach to an Avatar described by the given descriptor.
      *
-     * <p>Connects to the relay, sends the attach request, and returns the
-     * session event ID. The relay connection is managed internally.
+     * <p>Creates a {@link NipxxConnector}, connects to the relay, sends the
+     * attach request, and returns the session event ID.
      *
      * @param avatar descriptor with relay URL, login xpub, and services
      * @return session event ID
@@ -267,91 +257,22 @@ public class KeyMaster {
         if (privKey == null) {
             throw new IllegalStateException("No identity — call createIdentity() first");
         }
-
-        // Derive realm keys at index 0 for the transport
-        int realmIndex = 0;
-        byte[] realmPrivKey = deriveRealmPrivKey(realmIndex);
-        byte[] realmPubKey = NostrTransport.computeSchnorrPubKey(realmPrivKey);
-        String realmXpub = deriveRealmXpub(realmIndex);
-
-        this.transport = new NostrTransport(realmPrivKey, realmPubKey);
-        transport.setRealmDerivator(realmDerivator, realmIndex);
-        transport.setServiceRequestHandler(this::handleServiceRequest);
-        transport.connect(avatar.relay());
-
-        this.avatarLoginXpub = avatar.loginXpub();
-        return transport.sendAttach(avatarLoginXpub, avatar.services(), realmXpub,
-                pubKeyHex, privKey);
+        NipxxConnector conn = new NipxxConnector(session, realmDerivator, pubKeyHex, privKey);
+        String sessionId = conn.connect(avatar);
+        this.connector = conn;
+        return sessionId;
     }
 
     /**
      * Detach from the currently attached Avatar and close the relay connection.
      */
     public void detach() throws Exception {
-        if (transport == null || avatarLoginXpub == null) {
+        if (connector == null) {
             log.warn("No active session to detach");
             return;
         }
-        transport.sendDetach(avatarLoginXpub);
-        transport.close();
-        transport = null;
-        avatarLoginXpub = null;
-    }
-
-    // ==================== Service request handling ====================
-
-    private JsonObject handleServiceRequest(String serviceType, String method, JsonArray params) {
-        log.info("Service request: {}.{}", serviceType, method);
-
-        // SSH and GPG approval is handled internally by their service handlers
-        if ("ssh".equals(serviceType)) {
-            return handleSshRequest(method, params);
-        }
-        if ("gpg".equals(serviceType)) {
-            return handleGpgRequest(method, params);
-        }
-
-        JsonObject response = new JsonObject();
-        response.addProperty("error", "unknown service: " + serviceType);
-        return response;
-    }
-
-    private JsonObject handleSshRequest(String method, JsonArray params) {
-        if (sshChannel == null) {
-            JsonObject response = new JsonObject();
-            response.addProperty("error", "no identity set");
-            return response;
-        }
-        JsonObject response = sshChannel.dispatch(method, params);
-        // Wrap identities list for backward-compatible wire format:
-        // old format: {"result": {"identities": [...]}}
-        // ServiceChannel: {"result": [...]}
-        if ("request_identities".equals(method) && response.has("result")
-                && response.get("result").isJsonArray()) {
-            JsonObject wrapper = new JsonObject();
-            wrapper.add("identities", response.get("result"));
-            response.add("result", wrapper);
-        }
-        return response;
-    }
-
-    private JsonObject handleGpgRequest(String method, JsonArray params) {
-        if (gpgChannel == null) {
-            JsonObject response = new JsonObject();
-            response.addProperty("error", "no identity set");
-            return response;
-        }
-        JsonObject response = gpgChannel.dispatch(method, params);
-        // Wrap identities list for backward-compatible wire format:
-        // old format: {"result": {"identities": [...]}}
-        // ServiceChannel: {"result": [...]}
-        if ("request_identities".equals(method) && response.has("result")
-                && response.get("result").isJsonArray()) {
-            JsonObject wrapper = new JsonObject();
-            wrapper.add("identities", response.get("result"));
-            response.add("result", wrapper);
-        }
-        return response;
+        connector.disconnect();
+        connector = null;
     }
 
     /**

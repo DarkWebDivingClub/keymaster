@@ -195,4 +195,58 @@ class ServiceChannelTest {
         assertTrue(signResult.has("key_type"));
         assertEquals("ssh-ed25519", signResult.get("key_type").getAsString());
     }
+
+    // ── Session-based constructor tests ──────────────────────────────────
+
+    @Test
+    void dispatchViaSession_resolvesHandler() {
+        var vault = new Bip32KeyVault(TEST_MNEMONIC);
+        SshServiceHandler sshHandler = new SshServiceHandler(
+                vault, List.of(SshServiceHandlerTest.sshKeyEntry("alice@test.com")));
+
+        Session session = new Session();
+        session.putHandler(Protocol.SSH.coinType(), sshHandler);
+
+        ServiceChannel sessionChannel = new ServiceChannel(
+                session, Protocol.SSH.coinType(), ServiceChannel.createGson());
+
+        JsonObject response = sessionChannel.dispatch("request_identities", null);
+
+        assertTrue(response.has("result"));
+        assertFalse(response.has("error"));
+        var resultArray = response.getAsJsonArray("result");
+        assertEquals(1, resultArray.size());
+        assertEquals("alice@test.com",
+                resultArray.get(0).getAsJsonObject().get("comment").getAsString());
+    }
+
+    @Test
+    void sessionHandlerReplacement_usesNewHandler() {
+        var vault = new Bip32KeyVault(TEST_MNEMONIC);
+        SshServiceHandler handler1 = new SshServiceHandler(
+                vault, List.of(SshServiceHandlerTest.sshKeyEntry("alice@test.com")));
+
+        Session session = new Session();
+        session.putHandler(Protocol.SSH.coinType(), handler1);
+
+        ServiceChannel sessionChannel = new ServiceChannel(
+                session, Protocol.SSH.coinType(), ServiceChannel.createGson());
+
+        // First dispatch uses handler1
+        JsonObject response1 = sessionChannel.dispatch("request_identities", null);
+        assertEquals("alice@test.com",
+                response1.getAsJsonArray("result").get(0).getAsJsonObject()
+                        .get("comment").getAsString());
+
+        // Replace handler in session
+        SshServiceHandler handler2 = new SshServiceHandler(
+                vault, List.of(SshServiceHandlerTest.sshKeyEntry("bob@test.com")));
+        session.putHandler(Protocol.SSH.coinType(), handler2);
+
+        // Next dispatch picks up the new handler
+        JsonObject response2 = sessionChannel.dispatch("request_identities", null);
+        assertEquals("bob@test.com",
+                response2.getAsJsonArray("result").get(0).getAsJsonObject()
+                        .get("comment").getAsString());
+    }
 }
