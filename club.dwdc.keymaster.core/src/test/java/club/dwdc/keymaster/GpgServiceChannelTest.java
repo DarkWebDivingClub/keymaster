@@ -151,7 +151,7 @@ class GpgServiceChannelTest {
         // 1. request_identities: same public keys
         var vault = new Bip32KeyVault(TEST_MNEMONIC);
         var km = new KeyMaster(vault);
-        km.createIdentity("alice@test.com");
+        km.deriveIdentity("alice@test.com");
 
         // Get KM's GPG pubkeys via reflection (handleServiceRequest is private)
         // Instead, derive them directly from the vault

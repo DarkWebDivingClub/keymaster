@@ -158,7 +158,7 @@ class ServiceChannelTest {
         // 1. Test request_identities format
         var vault = new Bip32KeyVault(TEST_MNEMONIC);
         var km = new KeyMaster(vault);
-        km.createIdentity("alice@test.com");
+        km.deriveIdentity("alice@test.com");
 
         // Get KeyMaster's SSH identity blob for comparison
         int H = 0x80000000;

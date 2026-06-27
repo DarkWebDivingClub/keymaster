@@ -9,13 +9,10 @@ import club.dwdc.keyvault.nostr.KeyVaultIdentity;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import nostr.util.NostrUtil;
-import org.bitcoinj.crypto.ChildNumber;
-import org.bitcoinj.crypto.HDPath;
 import org.junit.jupiter.api.Test;
 
 import java.util.Base64;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -30,9 +27,9 @@ class KeyMasterTest {
             "abandon abandon abandon abandon abandon about";
 
     @Test
-    void createAndLogin() {
+    void deriveAndLogin() {
         KeyMaster km = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC));
-        km.createIdentity("alice@atlanta.com");
+        km.deriveIdentity("alice@atlanta.com");
         assertNotNull(km.getPubKeyHex());
         assertEquals(64, km.getPubKeyHex().length()); // 32 bytes hex
     }
@@ -40,25 +37,25 @@ class KeyMasterTest {
     @Test
     void deterministicIdentity() {
         KeyMaster km1 = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC));
-        km1.createIdentity("alice@atlanta.com");
+        km1.deriveIdentity("alice@atlanta.com");
         KeyMaster km2 = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC));
-        km2.createIdentity("alice@atlanta.com");
+        km2.deriveIdentity("alice@atlanta.com");
         assertEquals(km1.getPubKeyHex(), km2.getPubKeyHex());
     }
 
     @Test
     void differentIdentitiesDifferentKeys() {
         KeyMaster alice = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC));
-        alice.createIdentity("alice@atlanta.com");
+        alice.deriveIdentity("alice@atlanta.com");
         KeyMaster bob = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC));
-        bob.createIdentity("bob@ssh.com");
+        bob.deriveIdentity("bob@ssh.com");
         assertNotEquals(alice.getPubKeyHex(), bob.getPubKeyHex());
     }
 
     @Test
     void matchesKeyVaultIdentity() {
         KeyMaster km = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC));
-        km.createIdentity("alice@atlanta.com");
+        km.deriveIdentity("alice@atlanta.com");
 
         Bip32KeyVault vault = new Bip32KeyVault(TEST_MNEMONIC);
         KeyVaultIdentity kvi = new KeyVaultIdentity(vault, "alice@atlanta.com");
@@ -72,15 +69,17 @@ class KeyMasterTest {
     @Test
     void approvalHandlerAcceptsNull() {
         KeyMaster km = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC));
-        km.setApprovalHandler(null); // should not throw
-        assertNotNull(km);
+        KeyMasterController ctrl = new KeyMasterController(km);
+        ctrl.setApprovalHandler(null); // should not throw
+        assertNotNull(ctrl);
     }
 
     @Test
     void approvalHandlerAcceptsLambda() {
         KeyMaster km = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC));
-        km.setApprovalHandler((type, detail) -> true); // auto-approve lambda
-        assertNotNull(km);
+        KeyMasterController ctrl = new KeyMasterController(km);
+        ctrl.setApprovalHandler((type, detail) -> true); // auto-approve lambda
+        assertNotNull(ctrl);
     }
 
     // ── AvatarDescriptor tests ──────────────────────────────────────────
@@ -202,11 +201,11 @@ class KeyMasterTest {
     // ── SSH service handler integration tests ────────────────────────────
 
     @Test
-    void sshIdentities_throughKeyMaster_matchesOldBehavior() {
-        // Pre-refactor format: {"result": {"identities": [{"key_blob": "...", "comment": "..."}]}}
+    void sshIdentities_throughController_matchesOldBehavior() {
         var vault = new Bip32KeyVault(TEST_MNEMONIC);
         var km = new KeyMaster(vault);
-        km.createIdentity("alice@atlanta.com");
+        var ctrl = new KeyMasterController(km);
+        ctrl.createIdentity("alice@atlanta.com");
 
         // Simulate a service request through the handler
         JsonObject response = invokeSshRequest(km, "request_identities", null);
@@ -235,11 +234,12 @@ class KeyMasterTest {
     }
 
     @Test
-    void sshSign_throughKeyMaster_matchesOldBehavior() {
+    void sshSign_throughController_matchesOldBehavior() {
         var vault = new Bip32KeyVault(TEST_MNEMONIC);
         var km = new KeyMaster(vault);
-        km.setApprovalHandler((type, detail) -> true);
-        km.createIdentity("alice@atlanta.com");
+        var ctrl = new KeyMasterController(km);
+        ctrl.setApprovalHandler((type, detail) -> true);
+        ctrl.createIdentity("alice@atlanta.com");
 
         // First get the key blob
         JsonObject idResponse = invokeSshRequest(km, "request_identities", null);
@@ -274,13 +274,14 @@ class KeyMasterTest {
     void sshApproval_bridgesToHandler() {
         var vault = new Bip32KeyVault(TEST_MNEMONIC);
         var km = new KeyMaster(vault);
+        var ctrl = new KeyMasterController(km);
 
         AtomicBoolean handlerCalled = new AtomicBoolean(false);
-        km.setApprovalHandler((type, detail) -> {
+        ctrl.setApprovalHandler((type, detail) -> {
             handlerCalled.set(true);
             return false; // deny
         });
-        km.createIdentity("alice@atlanta.com");
+        ctrl.createIdentity("alice@atlanta.com");
 
         // Get the key blob first (request_identities has APPROVE policy, no handler call)
         JsonObject idResponse = invokeSshRequest(km, "request_identities", null);
@@ -306,21 +307,13 @@ class KeyMasterTest {
 
     /**
      * Invoke the SSH request handler via NipxxConnector, simulating transport dispatch.
-     * Constructs a connector from KeyMaster's session (via reflection) and calls
-     * handleServiceRequest directly (package-private).
+     * Uses km.getSession() (public getter) to access the session.
      */
     private static JsonObject invokeSshRequest(KeyMaster km, String method, JsonArray params) {
-        try {
-            var sessionField = KeyMaster.class.getDeclaredField("session");
-            sessionField.setAccessible(true);
-            Session session = (Session) sessionField.get(km);
-
-            NipxxConnector connector = new NipxxConnector(
-                    session, new Bip32KeyDerivator(new byte[64]), "", new byte[32]);
-            return connector.handleServiceRequest("ssh", method, params);
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
+        Session session = km.getSession();
+        NipxxConnector connector = new NipxxConnector(
+                session, new Bip32KeyDerivator(new byte[64]), "", new byte[32]);
+        return connector.handleServiceRequest("ssh", method, params);
     }
 
     @Test

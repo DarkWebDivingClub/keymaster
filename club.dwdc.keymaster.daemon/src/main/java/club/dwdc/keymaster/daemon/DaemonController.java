@@ -3,6 +3,7 @@ package club.dwdc.keymaster.daemon;
 import club.dwdc.keymaster.ApprovalHandler;
 import club.dwdc.keymaster.AvatarDescriptor;
 import club.dwdc.keymaster.KeyMaster;
+import club.dwdc.keymaster.KeyMasterController;
 import club.dwdc.keymaster.desktop.AutoApprovalHandler;
 import club.dwdc.keymaster.desktop.FileIdentityStore;
 import club.dwdc.keymaster.desktop.KDialogApprovalHandler;
@@ -31,7 +32,7 @@ public class DaemonController implements DaemonServer.RequestHandler {
     private final FileIdentityStore identityStore;
     private final Path configDir;
 
-    private KeyMaster currentKm;
+    private KeyMasterController currentCtrl;
     private String currentSessionId;
     private String currentIdentity;
 
@@ -67,7 +68,8 @@ public class DaemonController implements DaemonServer.RequestHandler {
 
         KeyVault vault = new Bip32KeyVault(seedStore.getMnemonic(), seedStore.getPassphrase());
         KeyMaster km = new KeyMaster(vault);
-        km.createIdentity(identity);
+        KeyMasterController ctrl = new KeyMasterController(km);
+        ctrl.createIdentity(identity);
 
         String pubkey = km.getPubKeyHex();
         identityStore.add(identity, pubkey);
@@ -110,7 +112,7 @@ public class DaemonController implements DaemonServer.RequestHandler {
     }
 
     private JsonObject sessionAttach(JsonObject params) {
-        if (currentKm != null) {
+        if (currentCtrl != null) {
             return error("Already attached. Detach first.");
         }
 
@@ -135,7 +137,8 @@ public class DaemonController implements DaemonServer.RequestHandler {
 
             KeyVault vault = new Bip32KeyVault(seedStore.getMnemonic(), seedStore.getPassphrase());
             KeyMaster km = new KeyMaster(vault);
-            km.createIdentity(identity);
+            KeyMasterController ctrl = new KeyMasterController(km);
+            ctrl.createIdentity(identity);
 
             ApprovalHandler handler;
             if ("auto".equals(policy)) {
@@ -144,15 +147,15 @@ public class DaemonController implements DaemonServer.RequestHandler {
                 Path policyPath = configDir.resolve("policy.conf");
                 handler = new PolicyConfig(policyPath, new KDialogApprovalHandler());
             }
-            km.setApprovalHandler(handler);
+            ctrl.setApprovalHandler(handler);
 
-            String sessionId = km.attach(descriptor);
+            String sessionId = ctrl.attach(descriptor);
 
             if (!identityStore.exists(identity)) {
                 identityStore.add(identity, km.getPubKeyHex());
             }
 
-            this.currentKm = km;
+            this.currentCtrl = ctrl;
             this.currentSessionId = sessionId;
             this.currentIdentity = identity;
 
@@ -167,7 +170,7 @@ public class DaemonController implements DaemonServer.RequestHandler {
     }
 
     private JsonObject sessionDetach() {
-        if (currentKm == null) {
+        if (currentCtrl == null) {
             JsonObject result = new JsonObject();
             result.addProperty("status", "ok");
             result.addProperty("message", "Not attached.");
@@ -175,11 +178,11 @@ public class DaemonController implements DaemonServer.RequestHandler {
         }
 
         try {
-            currentKm.detach();
+            currentCtrl.detach();
         } catch (Exception e) {
             log.error("Detach error", e);
         } finally {
-            currentKm = null;
+            currentCtrl = null;
             currentSessionId = null;
             currentIdentity = null;
         }
@@ -191,8 +194,8 @@ public class DaemonController implements DaemonServer.RequestHandler {
 
     private JsonObject sessionStatus() {
         JsonObject result = new JsonObject();
-        result.addProperty("attached", currentKm != null);
-        if (currentKm != null) {
+        result.addProperty("attached", currentCtrl != null);
+        if (currentCtrl != null) {
             result.addProperty("identity", currentIdentity);
             result.addProperty("sessionId", currentSessionId);
         }
@@ -203,13 +206,13 @@ public class DaemonController implements DaemonServer.RequestHandler {
      * Detach the current session if any. Called during daemon shutdown.
      */
     void shutdown() {
-        if (currentKm != null) {
+        if (currentCtrl != null) {
             try {
-                currentKm.detach();
+                currentCtrl.detach();
             } catch (Exception e) {
                 log.warn("Shutdown detach error", e);
             }
-            currentKm = null;
+            currentCtrl = null;
             currentSessionId = null;
             currentIdentity = null;
         }

@@ -33,7 +33,7 @@ public class Session {
     private List<Predicate<KeyEntry>> keySelections;
     private KeyMetaDataStore keyMetaDataStore;
     private KeyVault vault;
-    private ApprovalUI approvalUI;
+    private ApprovalHandler approvalHandler;
 
     /**
      * Full resolve path — resolves handlers from key selections against a metadata store.
@@ -41,15 +41,15 @@ public class Session {
      * @param keySelections    predicates to select keys (combined with OR)
      * @param keyMetaDataStore store containing key entries and identity names
      * @param vault            vault for cryptographic operations
-     * @param approvalUI       approval UI for handlers, or {@code null}
+     * @param approvalHandler  approval handler for handlers, or {@code null}
      */
     public Session(List<Predicate<KeyEntry>> keySelections,
                    KeyMetaDataStore keyMetaDataStore,
-                   KeyVault vault, ApprovalUI approvalUI) {
+                   KeyVault vault, ApprovalHandler approvalHandler) {
         this.keySelections = keySelections;
         this.keyMetaDataStore = keyMetaDataStore;
         this.vault = vault;
-        this.approvalUI = approvalUI;
+        this.approvalHandler = approvalHandler;
         resolveHandlers();
     }
 
@@ -86,15 +86,15 @@ public class Session {
 
             if (coinType == Protocol.SSH.coinType()) {
                 SshServiceHandler handler = new SshServiceHandler(vault, keys);
-                if (approvalUI != null) {
-                    handler.setApprovalUI(approvalUI);
+                if (approvalHandler != null) {
+                    handler.setApprovalUI(new ApprovalHandlerAdapter(approvalHandler, "ssh"));
                 }
                 handlers.put(coinType, handler);
             } else if (coinType == Protocol.OPENPGP.coinType()) {
                 String certArmor = deriveCertArmor(keys);
                 GpgServiceHandler handler = new GpgServiceHandler(vault, keys, certArmor);
-                if (approvalUI != null) {
-                    handler.setApprovalUI(approvalUI);
+                if (approvalHandler != null) {
+                    handler.setApprovalUI(new ApprovalHandlerAdapter(approvalHandler, "gpg"));
                 }
                 handlers.put(coinType, handler);
             }
