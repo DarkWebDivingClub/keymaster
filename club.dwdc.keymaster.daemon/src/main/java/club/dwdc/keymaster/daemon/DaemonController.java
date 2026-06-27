@@ -6,6 +6,7 @@ import club.dwdc.keymaster.KeyMaster;
 import club.dwdc.keymaster.KeyMasterController;
 import club.dwdc.keymaster.desktop.AutoApprovalHandler;
 import club.dwdc.keymaster.desktop.FileIdentityStore;
+import club.dwdc.keymaster.desktop.FileKeyMetaDataStore;
 import club.dwdc.keymaster.desktop.KDialogApprovalHandler;
 import club.dwdc.keymaster.desktop.PolicyConfig;
 import club.dwdc.keyvault.core.Bip32KeyVault;
@@ -61,17 +62,20 @@ public class DaemonController implements DaemonServer.RequestHandler {
         if (identity == null) {
             return error("missing 'identity' parameter");
         }
+        String pgpName = requireString(params, "pgp_name");
+        if (pgpName == null) pgpName = identity;
+        String pgpEmail = requireString(params, "pgp_email");
+        if (pgpEmail == null) pgpEmail = identity;
 
         if (!seedStore.exists()) {
             return error("No seed found. Run 'kv-cli seed generate' first.");
         }
 
         KeyVault vault = new Bip32KeyVault(seedStore.getMnemonic(), seedStore.getPassphrase());
-        KeyMaster km = new KeyMaster(vault);
+        var keyStore = new FileKeyMetaDataStore(configDir);
+        KeyMaster km = new KeyMaster(vault, keyStore);
         KeyMasterController ctrl = new KeyMasterController(km);
-        ctrl.createIdentity(identity);
-
-        String pubkey = km.getPubKeyHex();
+        String pubkey = ctrl.createIdentity(identity, pgpName, pgpEmail);
         identityStore.add(identity, pubkey);
 
         JsonObject result = new JsonObject();
@@ -136,9 +140,9 @@ public class DaemonController implements DaemonServer.RequestHandler {
             AvatarDescriptor descriptor = AvatarDescriptor.fromJson(descriptorJson);
 
             KeyVault vault = new Bip32KeyVault(seedStore.getMnemonic(), seedStore.getPassphrase());
-            KeyMaster km = new KeyMaster(vault);
+            var keyStore = new FileKeyMetaDataStore(configDir);
+            KeyMaster km = new KeyMaster(vault, keyStore);
             KeyMasterController ctrl = new KeyMasterController(km);
-            ctrl.createIdentity(identity);
 
             ApprovalHandler handler;
             if ("auto".equals(policy)) {
@@ -149,11 +153,7 @@ public class DaemonController implements DaemonServer.RequestHandler {
             }
             ctrl.setApprovalHandler(handler);
 
-            String sessionId = ctrl.attach(descriptor);
-
-            if (!identityStore.exists(identity)) {
-                identityStore.add(identity, km.getPubKeyHex());
-            }
+            String sessionId = ctrl.attach(descriptor, identity);
 
             this.currentCtrl = ctrl;
             this.currentSessionId = sessionId;

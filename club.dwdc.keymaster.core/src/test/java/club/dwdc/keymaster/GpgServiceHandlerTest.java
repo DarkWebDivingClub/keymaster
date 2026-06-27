@@ -20,7 +20,8 @@ class GpgServiceHandlerTest {
             "abandon abandon abandon abandon abandon abandon " +
             "abandon abandon abandon abandon abandon about";
 
-    private static final String DUMMY_CERT_ARMOR = "-----BEGIN PGP PUBLIC KEY BLOCK-----\ntest\n-----END PGP PUBLIC KEY BLOCK-----";
+    /** Fixed creation time for test determinism. */
+    private static final String TEST_CREATION_TIME = "1700000000";
 
     /**
      * Build a GPG KeyEntry for the given identity and role.
@@ -36,7 +37,11 @@ class GpgServiceHandlerTest {
         );
         return new KeyEntry(path, Map.of(
                 "label", identity + " / " + roleName,
-                "key_type", "ed25519"));
+                "key_type", "ed25519",
+                "identity", identity,
+                "creation_time", TEST_CREATION_TIME,
+                "pgp_name", identity,
+                "pgp_email", identity));
     }
 
     static List<KeyEntry> gpgKeysForIdentity(String identity) {
@@ -48,7 +53,7 @@ class GpgServiceHandlerTest {
     @Test
     void requestIdentities_returnsTwoRoles() {
         var vault = new Bip32KeyVault(TEST_MNEMONIC);
-        var handler = new GpgServiceHandler(vault, gpgKeysForIdentity("alice@test.com"), DUMMY_CERT_ARMOR);
+        var handler = new GpgServiceHandler(vault, gpgKeysForIdentity("alice@test.com"));
 
         List<GpgIdentity> ids = handler.requestIdentities();
 
@@ -63,7 +68,7 @@ class GpgServiceHandlerTest {
     @Test
     void requestIdentities_emptyWhenNoKeys() {
         var vault = new Bip32KeyVault(TEST_MNEMONIC);
-        var handler = new GpgServiceHandler(vault, List.of(), DUMMY_CERT_ARMOR);
+        var handler = new GpgServiceHandler(vault, List.of());
 
         List<GpgIdentity> ids = handler.requestIdentities();
 
@@ -73,9 +78,9 @@ class GpgServiceHandlerTest {
     @Test
     void requestIdentities_isDeterministic() {
         var vault1 = new Bip32KeyVault(TEST_MNEMONIC);
-        var handler1 = new GpgServiceHandler(vault1, gpgKeysForIdentity("alice@test.com"), DUMMY_CERT_ARMOR);
+        var handler1 = new GpgServiceHandler(vault1, gpgKeysForIdentity("alice@test.com"));
         var vault2 = new Bip32KeyVault(TEST_MNEMONIC);
-        var handler2 = new GpgServiceHandler(vault2, gpgKeysForIdentity("alice@test.com"), DUMMY_CERT_ARMOR);
+        var handler2 = new GpgServiceHandler(vault2, gpgKeysForIdentity("alice@test.com"));
 
         List<GpgIdentity> ids1 = handler1.requestIdentities();
         List<GpgIdentity> ids2 = handler2.requestIdentities();
@@ -87,7 +92,7 @@ class GpgServiceHandlerTest {
     @Test
     void requestIdentities_certAndSigningKeysDiffer() {
         var vault = new Bip32KeyVault(TEST_MNEMONIC);
-        var handler = new GpgServiceHandler(vault, gpgKeysForIdentity("alice@test.com"), DUMMY_CERT_ARMOR);
+        var handler = new GpgServiceHandler(vault, gpgKeysForIdentity("alice@test.com"));
 
         List<GpgIdentity> ids = handler.requestIdentities();
 
@@ -98,7 +103,7 @@ class GpgServiceHandlerTest {
     @Test
     void signRequest_producesValidSignature() {
         var vault = new Bip32KeyVault(TEST_MNEMONIC);
-        var handler = new GpgServiceHandler(vault, gpgKeysForIdentity("alice@test.com"), DUMMY_CERT_ARMOR);
+        var handler = new GpgServiceHandler(vault, gpgKeysForIdentity("alice@test.com"));
         handler.setApprovalUI((m, d) -> true);
 
         List<GpgIdentity> ids = handler.requestIdentities();
@@ -114,7 +119,7 @@ class GpgServiceHandlerTest {
     @Test
     void signRequest_worksWithSigningRole() {
         var vault = new Bip32KeyVault(TEST_MNEMONIC);
-        var handler = new GpgServiceHandler(vault, gpgKeysForIdentity("alice@test.com"), DUMMY_CERT_ARMOR);
+        var handler = new GpgServiceHandler(vault, gpgKeysForIdentity("alice@test.com"));
         handler.setApprovalUI((m, d) -> true);
 
         List<GpgIdentity> ids = handler.requestIdentities();
@@ -131,7 +136,7 @@ class GpgServiceHandlerTest {
     @Test
     void signRequest_throwsOnKeyMismatch() {
         var vault = new Bip32KeyVault(TEST_MNEMONIC);
-        var handler = new GpgServiceHandler(vault, gpgKeysForIdentity("alice@test.com"), DUMMY_CERT_ARMOR);
+        var handler = new GpgServiceHandler(vault, gpgKeysForIdentity("alice@test.com"));
         handler.setApprovalUI((m, d) -> true);
 
         byte[] wrongKey = new byte[32];
@@ -142,27 +147,39 @@ class GpgServiceHandlerTest {
     }
 
     @Test
-    void getPublicCert_returnsCertArmor() {
+    void getPublicCert_generatesOnTheFly() {
         var vault = new Bip32KeyVault(TEST_MNEMONIC);
-        var handler = new GpgServiceHandler(vault, gpgKeysForIdentity("alice@test.com"), DUMMY_CERT_ARMOR);
+        var handler = new GpgServiceHandler(vault, gpgKeysForIdentity("alice@test.com"));
 
         GpgPublicCert cert = handler.getPublicCert();
 
-        assertEquals(DUMMY_CERT_ARMOR, cert.publicCertArmor());
+        assertNotNull(cert.publicCertArmor());
+        assertTrue(cert.publicCertArmor().contains("BEGIN PGP PUBLIC KEY BLOCK"));
     }
 
     @Test
-    void getPublicCert_throwsWhenNoCert() {
+    void getPublicCert_throwsWhenNoKeys() {
         var vault = new Bip32KeyVault(TEST_MNEMONIC);
-        var handler = new GpgServiceHandler(vault, gpgKeysForIdentity("alice@test.com"), null);
+        var handler = new GpgServiceHandler(vault, List.of());
 
         assertThrows(IllegalStateException.class, handler::getPublicCert);
     }
 
     @Test
+    void getPublicCert_isDeterministic() {
+        var vault1 = new Bip32KeyVault(TEST_MNEMONIC);
+        var handler1 = new GpgServiceHandler(vault1, gpgKeysForIdentity("alice@test.com"));
+        var vault2 = new Bip32KeyVault(TEST_MNEMONIC);
+        var handler2 = new GpgServiceHandler(vault2, gpgKeysForIdentity("alice@test.com"));
+
+        assertEquals(handler1.getPublicCert().publicCertArmor(),
+                handler2.getPublicCert().publicCertArmor());
+    }
+
+    @Test
     void approval_signRequestDeniedWithoutUI() {
         var vault = new Bip32KeyVault(TEST_MNEMONIC);
-        var handler = new GpgServiceHandler(vault, gpgKeysForIdentity("alice@test.com"), DUMMY_CERT_ARMOR);
+        var handler = new GpgServiceHandler(vault, gpgKeysForIdentity("alice@test.com"));
         // No UI set — ASK policy should deny
 
         List<GpgIdentity> ids = handler.requestIdentities(); // APPROVE policy, works
@@ -174,7 +191,7 @@ class GpgServiceHandlerTest {
     @Test
     void approval_signRequestApprovedWithUI() {
         var vault = new Bip32KeyVault(TEST_MNEMONIC);
-        var handler = new GpgServiceHandler(vault, gpgKeysForIdentity("alice@test.com"), DUMMY_CERT_ARMOR);
+        var handler = new GpgServiceHandler(vault, gpgKeysForIdentity("alice@test.com"));
         handler.setApprovalUI((m, d) -> true);
 
         List<GpgIdentity> ids = handler.requestIdentities();
@@ -187,7 +204,7 @@ class GpgServiceHandlerTest {
     @Test
     void approval_overridePolicyToApprove() {
         var vault = new Bip32KeyVault(TEST_MNEMONIC);
-        var handler = new GpgServiceHandler(vault, gpgKeysForIdentity("alice@test.com"), DUMMY_CERT_ARMOR);
+        var handler = new GpgServiceHandler(vault, gpgKeysForIdentity("alice@test.com"));
         handler.setPolicy("sign_request", ApprovalPolicy.APPROVE);
 
         List<GpgIdentity> ids = handler.requestIdentities();

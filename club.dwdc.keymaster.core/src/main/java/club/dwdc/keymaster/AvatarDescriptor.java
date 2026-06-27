@@ -40,12 +40,12 @@ public record AvatarDescriptor(
     }
 
     /**
-     * Derive the login npub (x-only Schnorr public key hex) from the login xpub.
+     * Derive the login pubkey (x-only Schnorr public key hex) from the login xpub.
      * This is used for addressing Nostr events to the Avatar.
      *
      * @return 64-character hex string of the x-only public key
      */
-    public String loginNpub() {
+    public String loginPubkey() {
         DeterministicKey key = DeterministicKey.deserializeB58(loginXpub, BitcoinNetwork.MAINNET);
         // Compressed SEC1 key is 33 bytes; x-only is bytes [1..33]
         byte[] compressed = key.getPubKey();

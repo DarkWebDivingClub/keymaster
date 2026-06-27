@@ -157,10 +157,8 @@ class ServiceChannelTest {
 
         // 1. Test request_identities format
         var vault = new Bip32KeyVault(TEST_MNEMONIC);
-        var km = new KeyMaster(vault);
-        km.deriveIdentity("alice@test.com");
 
-        // Get KeyMaster's SSH identity blob for comparison
+        // Get vault-derived SSH identity blob for comparison
         int H = 0x80000000;
         int identityIndex = Bip32KeyDerivator.mangle("alice@test.com") | H;
         int[] sshPath = {44 | H, Protocol.SSH.coinType() | H, identityIndex,
@@ -196,7 +194,7 @@ class ServiceChannelTest {
         assertEquals("ssh-ed25519", signResult.get("key_type").getAsString());
     }
 
-    // ── Session-based constructor tests ──────────────────────────────────
+    // ── Realm-based constructor tests ──────────────────────────────────
 
     @Test
     void dispatchViaSession_resolvesHandler() {
@@ -204,13 +202,13 @@ class ServiceChannelTest {
         SshServiceHandler sshHandler = new SshServiceHandler(
                 vault, List.of(SshServiceHandlerTest.sshKeyEntry("alice@test.com")));
 
-        Session session = new Session();
-        session.putHandler(Protocol.SSH.coinType(), sshHandler);
+        Realm realm = new Realm();
+        realm.putHandler(Protocol.SSH.coinType(), sshHandler);
 
-        ServiceChannel sessionChannel = new ServiceChannel(
-                session, Protocol.SSH.coinType(), ServiceChannel.createGson());
+        ServiceChannel realmChannel = new ServiceChannel(
+                realm, Protocol.SSH.coinType(), ServiceChannel.createGson());
 
-        JsonObject response = sessionChannel.dispatch("request_identities", null);
+        JsonObject response = realmChannel.dispatch("request_identities", null);
 
         assertTrue(response.has("result"));
         assertFalse(response.has("error"));
@@ -226,14 +224,14 @@ class ServiceChannelTest {
         SshServiceHandler handler1 = new SshServiceHandler(
                 vault, List.of(SshServiceHandlerTest.sshKeyEntry("alice@test.com")));
 
-        Session session = new Session();
-        session.putHandler(Protocol.SSH.coinType(), handler1);
+        Realm realm = new Realm();
+        realm.putHandler(Protocol.SSH.coinType(), handler1);
 
-        ServiceChannel sessionChannel = new ServiceChannel(
-                session, Protocol.SSH.coinType(), ServiceChannel.createGson());
+        ServiceChannel realmChannel = new ServiceChannel(
+                realm, Protocol.SSH.coinType(), ServiceChannel.createGson());
 
         // First dispatch uses handler1
-        JsonObject response1 = sessionChannel.dispatch("request_identities", null);
+        JsonObject response1 = realmChannel.dispatch("request_identities", null);
         assertEquals("alice@test.com",
                 response1.getAsJsonArray("result").get(0).getAsJsonObject()
                         .get("comment").getAsString());
@@ -241,10 +239,10 @@ class ServiceChannelTest {
         // Replace handler in session
         SshServiceHandler handler2 = new SshServiceHandler(
                 vault, List.of(SshServiceHandlerTest.sshKeyEntry("bob@test.com")));
-        session.putHandler(Protocol.SSH.coinType(), handler2);
+        realm.putHandler(Protocol.SSH.coinType(), handler2);
 
         // Next dispatch picks up the new handler
-        JsonObject response2 = sessionChannel.dispatch("request_identities", null);
+        JsonObject response2 = realmChannel.dispatch("request_identities", null);
         assertEquals("bob@test.com",
                 response2.getAsJsonArray("result").get(0).getAsJsonObject()
                         .get("comment").getAsString());

@@ -17,9 +17,6 @@ class GpgServiceChannelTest {
             "abandon abandon abandon abandon abandon abandon " +
             "abandon abandon abandon abandon abandon about";
 
-    private static final String DUMMY_CERT_ARMOR =
-            "-----BEGIN PGP PUBLIC KEY BLOCK-----\ntest\n-----END PGP PUBLIC KEY BLOCK-----";
-
     private ServiceChannel channel;
     private GpgServiceHandler handler;
     private Gson gson;
@@ -28,8 +25,7 @@ class GpgServiceChannelTest {
     void setUp() {
         var vault = new Bip32KeyVault(TEST_MNEMONIC);
         handler = new GpgServiceHandler(vault,
-                GpgServiceHandlerTest.gpgKeysForIdentity("alice@test.com"),
-                DUMMY_CERT_ARMOR);
+                GpgServiceHandlerTest.gpgKeysForIdentity("alice@test.com"));
         gson = ServiceChannel.createGson();
         channel = new ServiceChannel(handler, gson);
     }
@@ -94,7 +90,7 @@ class GpgServiceChannelTest {
         assertTrue(response.has("result"));
         JsonObject result = response.getAsJsonObject("result");
         assertTrue(result.has("public_cert_armor"));
-        assertEquals(DUMMY_CERT_ARMOR, result.get("public_cert_armor").getAsString());
+        assertTrue(result.get("public_cert_armor").getAsString().contains("BEGIN PGP PUBLIC KEY BLOCK"));
     }
 
     @Test
@@ -150,11 +146,8 @@ class GpgServiceChannelTest {
 
         // 1. request_identities: same public keys
         var vault = new Bip32KeyVault(TEST_MNEMONIC);
-        var km = new KeyMaster(vault);
-        km.deriveIdentity("alice@test.com");
 
-        // Get KM's GPG pubkeys via reflection (handleServiceRequest is private)
-        // Instead, derive them directly from the vault
+        // Derive GPG pubkeys directly from the vault
         int H = 0x80000000;
         int identityIndex = club.dwdc.keyvault.core.Bip32KeyDerivator.mangle("alice@test.com") | H;
         int algCert = new club.dwdc.keyvault.core.AlgField(
@@ -200,9 +193,11 @@ class GpgServiceChannelTest {
         byte[] sig = Base64.getDecoder().decode(result.get("signature").getAsString());
         assertEquals(64, sig.length);
 
-        // 3. get_public_cert: verify structure
+        // 3. get_public_cert: verify on-the-fly generation
         JsonObject certResponse = channel.dispatch("get_public_cert", null);
         assertTrue(certResponse.has("result"));
         assertTrue(certResponse.getAsJsonObject("result").has("public_cert_armor"));
+        assertTrue(certResponse.getAsJsonObject("result").get("public_cert_armor")
+                .getAsString().contains("BEGIN PGP PUBLIC KEY BLOCK"));
     }
 }

@@ -1,24 +1,17 @@
 package club.dwdc.keymaster;
 
-import club.dwdc.keyvault.core.AlgField;
 import club.dwdc.keyvault.core.Bip32KeyDerivator;
 import club.dwdc.keyvault.core.Bip32KeyVault;
-import club.dwdc.keyvault.core.KeyVault;
-import club.dwdc.keyvault.core.Protocol;
 import club.dwdc.keyvault.nostr.KeyVaultIdentity;
-import com.google.gson.JsonArray;
-import com.google.gson.JsonObject;
 import nostr.util.NostrUtil;
 import org.junit.jupiter.api.Test;
 
-import java.util.Base64;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Unit tests for KeyMaster identity derivation (no relay needed).
+ * Unit tests for KeyMaster and KeyMasterController identity + service operations (no relay needed).
  */
 class KeyMasterTest {
 
@@ -27,48 +20,58 @@ class KeyMasterTest {
             "abandon abandon abandon abandon abandon about";
 
     @Test
-    void deriveAndLogin() {
-        KeyMaster km = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC));
-        km.deriveIdentity("alice@atlanta.com");
-        assertNotNull(km.getPubKeyHex());
-        assertEquals(64, km.getPubKeyHex().length()); // 32 bytes hex
+    void createIdentityReturnsPubkey() {
+        KeyMaster km = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC), new InMemoryKeyMetaDataStore());
+        KeyMasterController ctrl = new KeyMasterController(km);
+        String pubkey = ctrl.createIdentity("alice@atlanta.com", "Alice", "alice@atlanta.com");
+        assertNotNull(pubkey);
+        assertEquals(64, pubkey.length()); // 32 bytes hex
     }
 
     @Test
     void deterministicIdentity() {
-        KeyMaster km1 = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC));
-        km1.deriveIdentity("alice@atlanta.com");
-        KeyMaster km2 = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC));
-        km2.deriveIdentity("alice@atlanta.com");
-        assertEquals(km1.getPubKeyHex(), km2.getPubKeyHex());
+        KeyMaster km1 = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC), new InMemoryKeyMetaDataStore());
+        KeyMasterController ctrl1 = new KeyMasterController(km1);
+        String pub1 = ctrl1.createIdentity("alice@atlanta.com", "Alice", "alice@atlanta.com");
+
+        KeyMaster km2 = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC), new InMemoryKeyMetaDataStore());
+        KeyMasterController ctrl2 = new KeyMasterController(km2);
+        String pub2 = ctrl2.createIdentity("alice@atlanta.com", "Alice", "alice@atlanta.com");
+
+        assertEquals(pub1, pub2);
     }
 
     @Test
     void differentIdentitiesDifferentKeys() {
-        KeyMaster alice = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC));
-        alice.deriveIdentity("alice@atlanta.com");
-        KeyMaster bob = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC));
-        bob.deriveIdentity("bob@ssh.com");
-        assertNotEquals(alice.getPubKeyHex(), bob.getPubKeyHex());
+        KeyMaster kmAlice = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC), new InMemoryKeyMetaDataStore());
+        KeyMasterController ctrlAlice = new KeyMasterController(kmAlice);
+        String alicePub = ctrlAlice.createIdentity("alice@atlanta.com", "Alice", "alice@atlanta.com");
+
+        KeyMaster kmBob = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC), new InMemoryKeyMetaDataStore());
+        KeyMasterController ctrlBob = new KeyMasterController(kmBob);
+        String bobPub = ctrlBob.createIdentity("bob@ssh.com", "Bob", "bob@ssh.com");
+
+        assertNotEquals(alicePub, bobPub);
     }
 
     @Test
     void matchesKeyVaultIdentity() {
-        KeyMaster km = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC));
-        km.deriveIdentity("alice@atlanta.com");
+        KeyMaster km = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC), new InMemoryKeyMetaDataStore());
+        KeyMasterController ctrl = new KeyMasterController(km);
+        String pubkey = ctrl.createIdentity("alice@atlanta.com", "Alice", "alice@atlanta.com");
 
         Bip32KeyVault vault = new Bip32KeyVault(TEST_MNEMONIC);
         KeyVaultIdentity kvi = new KeyVaultIdentity(vault, "alice@atlanta.com");
         String expected = NostrUtil.bytesToHex(kvi.getPublicKey().getRawData());
 
-        assertEquals(expected, km.getPubKeyHex());
+        assertEquals(expected, pubkey);
     }
 
     // ── ApprovalHandler tests ──────────────────────────────────────────
 
     @Test
     void approvalHandlerAcceptsNull() {
-        KeyMaster km = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC));
+        KeyMaster km = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC), new InMemoryKeyMetaDataStore());
         KeyMasterController ctrl = new KeyMasterController(km);
         ctrl.setApprovalHandler(null); // should not throw
         assertNotNull(ctrl);
@@ -76,7 +79,7 @@ class KeyMasterTest {
 
     @Test
     void approvalHandlerAcceptsLambda() {
-        KeyMaster km = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC));
+        KeyMaster km = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC), new InMemoryKeyMetaDataStore());
         KeyMasterController ctrl = new KeyMasterController(km);
         ctrl.setApprovalHandler((type, detail) -> true); // auto-approve lambda
         assertNotNull(ctrl);
@@ -114,8 +117,8 @@ class KeyMasterTest {
     }
 
     @Test
-    void avatarDescriptorLoginNpub() {
-        // Use a known xpub and verify loginNpub() returns a valid 64-char hex
+    void avatarDescriptorLoginPubkey() {
+        // Use a known xpub and verify loginPubkey() returns a valid 64-char hex
         String json = """
                 {
                   "relay": "ws://localhost:7777",
@@ -123,11 +126,11 @@ class KeyMasterTest {
                 }
                 """;
         AvatarDescriptor d = AvatarDescriptor.fromJson(json);
-        String npub = d.loginNpub();
-        assertNotNull(npub);
-        assertEquals(64, npub.length());
+        String pubkey = d.loginPubkey();
+        assertNotNull(pubkey);
+        assertEquals(64, pubkey.length());
         // Should be valid hex
-        assertDoesNotThrow(() -> NostrUtil.hexToBytes(npub));
+        assertDoesNotThrow(() -> NostrUtil.hexToBytes(pubkey));
     }
 
     @Test
@@ -154,166 +157,23 @@ class KeyMasterTest {
         assertEquals(List.of(), d.services());
     }
 
-    // ── Realm derivation tests ──────────────────────────────────────────
-
     @Test
-    void realmXpubIsDeterministic() {
-        byte[] seed = new byte[64];
-        seed[0] = 42;
-        KeyMaster km1 = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC), seed);
-        KeyMaster km2 = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC), seed.clone());
-        assertEquals(km1.deriveRealmXpub(0), km2.deriveRealmXpub(0));
-    }
-
-    @Test
-    void realmXpubFormat() {
-        byte[] seed = new byte[64];
-        seed[0] = 1;
-        KeyMaster km = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC), seed);
-        String xpub = km.deriveRealmXpub(0);
-        assertTrue(xpub.startsWith("xpub"), "realm xpub: " + xpub);
-    }
-
-    @Test
-    void realmServiceKeyDerivation() {
-        byte[] seed = new byte[64];
-        seed[0] = 1;
-        KeyMaster km = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC), seed);
-        byte[] sshKey = km.deriveRealmServiceKey(0, "ssh", 0);
-        byte[] gpgKey = km.deriveRealmServiceKey(0, "gpg", 0);
-        assertNotNull(sshKey);
-        assertEquals(32, sshKey.length);
-        // Different services produce different keys
-        assertFalse(java.util.Arrays.equals(sshKey, gpgKey));
-    }
-
-    @Test
-    void xpubToNpubProduces64CharHex() {
+    void xpubToPubkeyProduces64CharHex() {
         // Use a valid xpub (m/0 from well-known seed)
         byte[] seed = new byte[64];
         seed[0] = 1;
         Bip32KeyDerivator kd = new Bip32KeyDerivator(seed);
         String xpub = kd.deriveXpub(0);
-        String npub = NostrTransport.xpubToNpub(xpub);
-        assertEquals(64, npub.length());
-    }
-
-    // ── SSH service handler integration tests ────────────────────────────
-
-    @Test
-    void sshIdentities_throughController_matchesOldBehavior() {
-        var vault = new Bip32KeyVault(TEST_MNEMONIC);
-        var km = new KeyMaster(vault);
-        var ctrl = new KeyMasterController(km);
-        ctrl.createIdentity("alice@atlanta.com");
-
-        // Simulate a service request through the handler
-        JsonObject response = invokeSshRequest(km, "request_identities", null);
-
-        // Must have result.identities array
-        assertTrue(response.has("result"), "response must have 'result'");
-        JsonObject result = response.getAsJsonObject("result");
-        assertTrue(result.has("identities"), "result must have 'identities'");
-        JsonArray identities = result.getAsJsonArray("identities");
-        assertEquals(1, identities.size());
-
-        JsonObject identity = identities.get(0).getAsJsonObject();
-        assertTrue(identity.has("key_blob"));
-        assertTrue(identity.has("comment"));
-        assertEquals("alice@atlanta.com", identity.get("comment").getAsString());
-
-        // Verify key_blob matches vault-derived SSH key
-        int H = 0x80000000;
-        int identityIndex = Bip32KeyDerivator.mangle("alice@atlanta.com") | H;
-        int[] sshPath = {44 | H, Protocol.SSH.coinType() | H, identityIndex,
-                new AlgField(AlgField.ALG_ED25519, 0, 0).toIndex() | H, 0 | H};
-        var pubResult = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, sshPath);
-        byte[] expectedBlob = SshServiceHandler.buildSshEd25519KeyBlob(pubResult.data());
-        String expectedB64 = Base64.getEncoder().encodeToString(expectedBlob);
-        assertEquals(expectedB64, identity.get("key_blob").getAsString());
+        String pubkey = NostrTransport.xpubToPubkey(xpub);
+        assertEquals(64, pubkey.length());
     }
 
     @Test
-    void sshSign_throughController_matchesOldBehavior() {
+    void sshAuthorizedKeysLine() {
         var vault = new Bip32KeyVault(TEST_MNEMONIC);
-        var km = new KeyMaster(vault);
-        var ctrl = new KeyMasterController(km);
-        ctrl.setApprovalHandler((type, detail) -> true);
-        ctrl.createIdentity("alice@atlanta.com");
-
-        // First get the key blob
-        JsonObject idResponse = invokeSshRequest(km, "request_identities", null);
-        String keyBlobB64 = idResponse.getAsJsonObject("result")
-                .getAsJsonArray("identities")
-                .get(0).getAsJsonObject()
-                .get("key_blob").getAsString();
-
-        // Sign with it
-        String dataB64 = Base64.getEncoder().encodeToString("test data".getBytes());
-        JsonObject param = new JsonObject();
-        param.addProperty("key_blob", keyBlobB64);
-        param.addProperty("data", dataB64);
-        JsonArray params = new JsonArray();
-        params.add(param);
-
-        JsonObject response = invokeSshRequest(km, "sign_request", params);
-
-        // Must have result.signature and result.key_type
-        assertTrue(response.has("result"), "response must have 'result'");
-        JsonObject result = response.getAsJsonObject("result");
-        assertTrue(result.has("signature"));
-        assertTrue(result.has("key_type"));
-        assertEquals("ssh-ed25519", result.get("key_type").getAsString());
-
-        // Signature should be 64 bytes (Ed25519)
-        byte[] sig = Base64.getDecoder().decode(result.get("signature").getAsString());
-        assertEquals(64, sig.length);
-    }
-
-    @Test
-    void sshApproval_bridgesToHandler() {
-        var vault = new Bip32KeyVault(TEST_MNEMONIC);
-        var km = new KeyMaster(vault);
-        var ctrl = new KeyMasterController(km);
-
-        AtomicBoolean handlerCalled = new AtomicBoolean(false);
-        ctrl.setApprovalHandler((type, detail) -> {
-            handlerCalled.set(true);
-            return false; // deny
-        });
-        ctrl.createIdentity("alice@atlanta.com");
-
-        // Get the key blob first (request_identities has APPROVE policy, no handler call)
-        JsonObject idResponse = invokeSshRequest(km, "request_identities", null);
-        String keyBlobB64 = idResponse.getAsJsonObject("result")
-                .getAsJsonArray("identities")
-                .get(0).getAsJsonObject()
-                .get("key_blob").getAsString();
-
-        // Reset flag and try signing (ASK policy → flows through ApprovalHandler)
-        handlerCalled.set(false);
-        JsonObject param = new JsonObject();
-        param.addProperty("key_blob", keyBlobB64);
-        param.addProperty("data", Base64.getEncoder().encodeToString("data".getBytes()));
-        JsonArray params = new JsonArray();
-        params.add(param);
-
-        JsonObject response = invokeSshRequest(km, "sign_request", params);
-
-        assertTrue(handlerCalled.get(), "ApprovalHandler should have been called");
-        assertTrue(response.has("error"));
-        assertEquals("request denied by user", response.get("error").getAsString());
-    }
-
-    /**
-     * Invoke the SSH request handler via NipxxConnector, simulating transport dispatch.
-     * Uses km.getSession() (public getter) to access the session.
-     */
-    private static JsonObject invokeSshRequest(KeyMaster km, String method, JsonArray params) {
-        Session session = km.getSession();
-        NipxxConnector connector = new NipxxConnector(
-                session, new Bip32KeyDerivator(new byte[64]), "", new byte[32]);
-        return connector.handleServiceRequest("ssh", method, params);
+        String line = SshServiceHandler.getAuthorizedKeysLine(vault, "alice@atlanta.com");
+        assertTrue(line.startsWith("ssh-ed25519 "));
+        assertTrue(line.endsWith(" alice@atlanta.com"));
     }
 
     @Test

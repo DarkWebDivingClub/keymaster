@@ -17,7 +17,7 @@ import java.util.function.Predicate;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-class SessionTest {
+class RealmTest {
 
     static final String TEST_MNEMONIC =
             "abandon abandon abandon abandon abandon abandon " +
@@ -44,7 +44,11 @@ class SessionTest {
         );
         return new KeyEntry(path, Map.of(
                 "label", identity + " / " + roleName,
-                "key_type", "ed25519"));
+                "key_type", "ed25519",
+                "identity", identity,
+                "creation_time", "1700000000",
+                "pgp_name", identity,
+                "pgp_email", identity));
     }
 
     static void populateStore(InMemoryKeyMetaDataStore store, String identity) {
@@ -65,13 +69,13 @@ class SessionTest {
         int aliceHash = Bip32KeyDerivator.mangle("alice@atlanta.com");
         Predicate<KeyEntry> selectAlice = k -> k.identity() == aliceHash;
 
-        var session = new Session(List.of(selectAlice), store, vault, null);
+        var realm = new Realm(List.of(selectAlice), store, vault, null);
 
-        assertNotNull(session.getHandler(Protocol.SSH.coinType()));
-        assertNotNull(session.getHandler(Protocol.OPENPGP.coinType()));
+        assertNotNull(realm.getHandler(Protocol.SSH.coinType()));
+        assertNotNull(realm.getHandler(Protocol.OPENPGP.coinType()));
         assertEquals(
                 Set.of(Protocol.SSH.coinType(), Protocol.OPENPGP.coinType()),
-                session.getHandlerCoinTypes());
+                realm.getHandlerCoinTypes());
     }
 
     @Test
@@ -83,11 +87,11 @@ class SessionTest {
         // Filter to SSH keys only
         Predicate<KeyEntry> sshOnly = k -> k.coinType() == Protocol.SSH.coinType();
 
-        var session = new Session(List.of(sshOnly), store, vault, null);
+        var realm = new Realm(List.of(sshOnly), store, vault, null);
 
-        assertNotNull(session.getHandler(Protocol.SSH.coinType()));
-        assertNull(session.getHandler(Protocol.OPENPGP.coinType()));
-        assertEquals(Set.of(Protocol.SSH.coinType()), session.getHandlerCoinTypes());
+        assertNotNull(realm.getHandler(Protocol.SSH.coinType()));
+        assertNull(realm.getHandler(Protocol.OPENPGP.coinType()));
+        assertEquals(Set.of(Protocol.SSH.coinType()), realm.getHandlerCoinTypes());
     }
 
     @Test
@@ -102,13 +106,13 @@ class SessionTest {
         Predicate<KeyEntry> selectAlice = k -> k.identity() == aliceHash;
         Predicate<KeyEntry> selectBob = k -> k.identity() == bobHash;
 
-        var session = new Session(List.of(selectAlice, selectBob), store, vault, null);
+        var realm = new Realm(List.of(selectAlice, selectBob), store, vault, null);
 
-        assertNotNull(session.getHandler(Protocol.SSH.coinType()));
-        assertNotNull(session.getHandler(Protocol.OPENPGP.coinType()));
+        assertNotNull(realm.getHandler(Protocol.SSH.coinType()));
+        assertNotNull(realm.getHandler(Protocol.OPENPGP.coinType()));
         assertEquals(
                 Set.of(Protocol.SSH.coinType(), Protocol.OPENPGP.coinType()),
-                session.getHandlerCoinTypes());
+                realm.getHandlerCoinTypes());
     }
 
     @Test
@@ -119,10 +123,10 @@ class SessionTest {
 
         Predicate<KeyEntry> all = k -> true;
 
-        var session = new Session(List.of(all), store, vault, null);
+        var realm = new Realm(List.of(all), store, vault, null);
 
-        assertTrue(session.getHandlerCoinTypes().contains(Protocol.SSH.coinType()));
-        assertTrue(session.getHandlerCoinTypes().contains(Protocol.OPENPGP.coinType()));
+        assertTrue(realm.getHandlerCoinTypes().contains(Protocol.SSH.coinType()));
+        assertTrue(realm.getHandlerCoinTypes().contains(Protocol.OPENPGP.coinType()));
     }
 
     // ── getHandler tests ──────────────────────────────────────────────────
@@ -134,10 +138,10 @@ class SessionTest {
         populateStore(store, "alice@atlanta.com");
 
         int aliceHash = Bip32KeyDerivator.mangle("alice@atlanta.com");
-        var session = new Session(List.of(k -> k.identity() == aliceHash), store, vault, null);
+        var realm = new Realm(List.of(k -> k.identity() == aliceHash), store, vault, null);
 
-        assertInstanceOf(SshServiceHandler.class, session.getHandler(Protocol.SSH.coinType()));
-        assertInstanceOf(GpgServiceHandler.class, session.getHandler(Protocol.OPENPGP.coinType()));
+        assertInstanceOf(SshServiceHandler.class, realm.getHandler(Protocol.SSH.coinType()));
+        assertInstanceOf(GpgServiceHandler.class, realm.getHandler(Protocol.OPENPGP.coinType()));
     }
 
     @Test
@@ -147,51 +151,51 @@ class SessionTest {
         populateStore(store, "alice@atlanta.com");
 
         int aliceHash = Bip32KeyDerivator.mangle("alice@atlanta.com");
-        var session = new Session(List.of(k -> k.identity() == aliceHash), store, vault, null);
+        var realm = new Realm(List.of(k -> k.identity() == aliceHash), store, vault, null);
 
-        assertNull(session.getHandler(99999));
+        assertNull(realm.getHandler(99999));
     }
 
     // ── putHandler tests ──────────────────────────────────────────────────
 
     @Test
     void putHandler_setsHandler() {
-        var session = new Session();
+        var realm = new Realm();
         var vault = new Bip32KeyVault(TEST_MNEMONIC);
         var handler = new SshServiceHandler(vault, List.of(sshKeyEntry("alice@atlanta.com")));
 
-        session.putHandler(Protocol.SSH.coinType(), handler);
+        realm.putHandler(Protocol.SSH.coinType(), handler);
 
-        assertSame(handler, session.getHandler(Protocol.SSH.coinType()));
+        assertSame(handler, realm.getHandler(Protocol.SSH.coinType()));
     }
 
     @Test
     void putHandler_replacesExistingHandler() {
-        var session = new Session();
+        var realm = new Realm();
         var vault = new Bip32KeyVault(TEST_MNEMONIC);
         var first = new SshServiceHandler(vault, List.of(sshKeyEntry("alice@atlanta.com")));
         var second = new SshServiceHandler(vault, List.of(sshKeyEntry("bob@ssh.com")));
 
-        session.putHandler(Protocol.SSH.coinType(), first);
-        session.putHandler(Protocol.SSH.coinType(), second);
+        realm.putHandler(Protocol.SSH.coinType(), first);
+        realm.putHandler(Protocol.SSH.coinType(), second);
 
-        assertSame(second, session.getHandler(Protocol.SSH.coinType()));
+        assertSame(second, realm.getHandler(Protocol.SSH.coinType()));
     }
 
     @Test
     void getHandlerCoinTypes_reflectsPuts() {
-        var session = new Session();
+        var realm = new Realm();
         var vault = new Bip32KeyVault(TEST_MNEMONIC);
 
-        assertTrue(session.getHandlerCoinTypes().isEmpty());
+        assertTrue(realm.getHandlerCoinTypes().isEmpty());
 
-        session.putHandler(Protocol.SSH.coinType(),
+        realm.putHandler(Protocol.SSH.coinType(),
                 new SshServiceHandler(vault, List.of(sshKeyEntry("alice@atlanta.com"))));
-        session.putHandler(Protocol.OPENPGP.coinType(),
-                new GpgServiceHandler(vault, List.of(), null));
+        realm.putHandler(Protocol.OPENPGP.coinType(),
+                new GpgServiceHandler(vault, List.of()));
 
         assertEquals(
                 Set.of(Protocol.SSH.coinType(), Protocol.OPENPGP.coinType()),
-                session.getHandlerCoinTypes());
+                realm.getHandlerCoinTypes());
     }
 }

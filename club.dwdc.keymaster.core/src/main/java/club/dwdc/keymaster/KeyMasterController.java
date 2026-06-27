@@ -5,84 +5,63 @@ import club.dwdc.keyvault.core.Bip32KeyDerivator;
 import club.dwdc.keyvault.core.ConfigField;
 import club.dwdc.keyvault.core.KeyVault;
 import club.dwdc.keyvault.core.Protocol;
-import club.dwdc.keyexporter.core.OpenPgpKeySeeds;
-import club.dwdc.keyexporter.core.OpenPgpMetadata;
-import club.dwdc.keyexporter.core.OpenPgpSeedDeriver;
-import club.dwdc.keyexporter.openpgp.OpenPgpExport;
-import club.dwdc.keyexporter.openpgp.OpenPgpExporter;
+import nostr.util.NostrUtil;
 import org.bitcoinj.crypto.ChildNumber;
 import org.bitcoinj.crypto.HDPath;
-import org.bouncycastle.openpgp.PGPException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.IOException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
- * Orchestrates identity creation, session building, and attach/detach lifecycle.
+ * Orchestrates identity creation, realm building, and attach/detach lifecycle.
  *
  * <p>Wraps a passive {@link KeyMaster} (state holder) and drives the workflow:
- * derive identity keys, build service handlers, create sessions, and manage
- * connector lifecycle.
+ * create identity, build service handlers, create realms, and manage
+ * connector lifecycle. No identity private key is ever exported from the vault.
  */
 public class KeyMasterController {
 
     private static final Logger log = LoggerFactory.getLogger(KeyMasterController.class);
+    private static final int H = 0x80000000;
 
     private final KeyMaster km;
-    private final KeyMetaDataStore keyStore;
     private ApprovalHandler approvalHandler;
+    private String currentIdentity;
 
     /**
-     * Create a controller without a key metadata store (direct mode).
+     * Create a controller wrapping a KeyMaster.
      *
      * @param km the KeyMaster state holder
      */
     public KeyMasterController(KeyMaster km) {
-        this(km, null);
-    }
-
-    /**
-     * Create a controller with a key metadata store for persistent key tracking.
-     *
-     * @param km       the KeyMaster state holder
-     * @param keyStore metadata store for key entries and identity mappings, or {@code null}
-     */
-    public KeyMasterController(KeyMaster km, KeyMetaDataStore keyStore) {
         this.km = km;
-        this.keyStore = keyStore;
     }
 
     /**
-     * Create (or re-derive) an identity: derive keys, build handlers, and populate session.
+     * Create an identity: store key metadata entries and return the identity's
+     * Nostr pubkey. Does not build handlers or realm — that happens in
+     * {@link #attach(AvatarDescriptor, String)}.
      *
      * @param identity identity identifier (e.g. "alice@atlanta.com")
+     * @param pgpName  user's name for OpenPGP user ID
+     * @param pgpEmail user's email for OpenPGP user ID
+     * @return identity pubkey (64-char hex)
      */
-    public void createIdentity(String identity) {
-        // 1. Derive Nostr key pair from vault
-        km.deriveIdentity(identity);
-
+    public String createIdentity(String identity, String pgpName, String pgpEmail) {
         KeyVault vault = km.getVault();
-        int mangledIdentity = Bip32KeyDerivator.mangle(identity);
-
-        // 2. Generate GPG public cert for this identity
-        String gpgPublicCertArmor;
-        try {
-            OpenPgpKeySeeds gpgSeeds = OpenPgpSeedDeriver.derive(vault, identity);
-            OpenPgpMetadata gpgMetadata = OpenPgpMetadata.create(
-                    identity, identity, identity, Instant.ofEpochSecond(1));
-            OpenPgpExport gpgExport = OpenPgpExporter.export(
-                    gpgSeeds, gpgMetadata, "keymaster".toCharArray());
-            gpgPublicCertArmor = gpgExport.publicKeyArmor();
-        } catch (PGPException | IOException e) {
-            throw new IllegalStateException("Failed to generate GPG cert", e);
+        KeyMetaDataStore keyStore = km.getKeyMetaDataStore();
+        if (keyStore == null) {
+            throw new IllegalStateException("Metadata store is required for createIdentity");
         }
+        int mangledIdentity = Bip32KeyDerivator.mangle(identity);
+        long creationTime = Instant.now().getEpochSecond();
 
-        // 3. Build SSH service handler
+        // 1. SSH key entry — metadata-only
         HDPath sshHdPath = HDPath.m(
                 new ChildNumber(44, true),
                 new ChildNumber(Protocol.SSH.coinType(), true),
@@ -91,12 +70,8 @@ public class KeyMasterController {
                 new ChildNumber(new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex(), true)
         );
         KeyEntry sshKey = new KeyEntry(sshHdPath, Map.of("comment", identity));
-        SshServiceHandler sshHandler = new SshServiceHandler(vault, List.of(sshKey));
-        if (approvalHandler != null) {
-            sshHandler.setApprovalUI(new ApprovalHandlerAdapter(approvalHandler, "ssh"));
-        }
 
-        // 4. Build GPG service handler
+        // 2. GPG key entries (certification + signing) — metadata-only
         String[] roleNames = {"certification", "signing"};
         List<KeyEntry> gpgKeys = new ArrayList<>();
         for (int role = 0; role < roleNames.length; role++) {
@@ -109,85 +84,158 @@ public class KeyMasterController {
             );
             gpgKeys.add(new KeyEntry(gpgHdPath, Map.of(
                     "label", identity + " / " + roleNames[role],
-                    "key_type", "ed25519")));
-        }
-        GpgServiceHandler gpgHandler = new GpgServiceHandler(vault, gpgKeys, gpgPublicCertArmor);
-        if (approvalHandler != null) {
-            gpgHandler.setApprovalUI(new ApprovalHandlerAdapter(approvalHandler, "gpg"));
-        }
-
-        // 5. Create session and register handlers
-        Session session = new Session();
-        session.putHandler(Protocol.SSH.coinType(), sshHandler);
-        session.putHandler(Protocol.OPENPGP.coinType(), gpgHandler);
-        km.setSession(session);
-
-        // 6. Store key entries in metadata store if present
-        if (keyStore != null) {
-            keyStore.addIdentity(identity);
-            keyStore.addKey(sshKey);
-            for (KeyEntry gpgKey : gpgKeys) {
-                keyStore.addKey(gpgKey);
-            }
+                    "key_type", "ed25519",
+                    "identity", identity,
+                    "creation_time", String.valueOf(creationTime),
+                    "pgp_name", pgpName,
+                    "pgp_email", pgpEmail)));
         }
 
-        log.info("Identity created: {}", km.getPubKeyHex());
+        // 3. Store in metadata store
+        keyStore.addIdentity(identity);
+        keyStore.addKey(sshKey);
+        for (KeyEntry gpgKey : gpgKeys) {
+            keyStore.addKey(gpgKey);
+        }
+
+        // 4. Derive pubkey from vault (no private key export)
+        int identityIndex = mangledIdentity | H;
+        int[] nostrPath = {
+                44 | H,
+                Protocol.NOSTR.coinType() | H,
+                identityIndex,
+                new AlgField(AlgField.ALG_SCHNORR, 0, 0).toIndex() | H,
+                new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex() | H
+        };
+        String pubkey = NostrUtil.bytesToHex(
+                vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, nostrPath).data());
+
+        log.info("Identity created: {}", pubkey);
+        return pubkey;
     }
 
     /**
      * Set an approval handler for incoming service requests.
      *
      * <p>When set, every service request is passed through the handler before
-     * processing. If a session is already active, propagates to all handlers
+     * processing. If a realm is already active, propagates to all handlers
      * with per-service-type adapters.
      *
      * @param handler approval handler, or {@code null} to auto-approve
      */
     public void setApprovalHandler(ApprovalHandler handler) {
         this.approvalHandler = handler;
-        Session session = km.getSession();
-        if (session != null) {
-            for (int coinType : session.getHandlerCoinTypes()) {
-                AbstractServiceHandler h = session.getHandler(coinType);
-                if (h != null) {
-                    String serviceType = coinType == Protocol.SSH.coinType() ? "ssh" : "gpg";
-                    h.setApprovalUI(handler != null
-                            ? new ApprovalHandlerAdapter(handler, serviceType)
-                            : null);
+        if (currentIdentity != null) {
+            Realm realm = km.getRealm(currentIdentity);
+            if (realm != null) {
+                for (int coinType : realm.getHandlerCoinTypes()) {
+                    AbstractServiceHandler h = realm.getHandler(coinType);
+                    if (h != null) {
+                        String serviceType = coinType == Protocol.SSH.coinType() ? "ssh" : "gpg";
+                        h.setApprovalUI(handler != null
+                                ? new ApprovalHandlerAdapter(handler, serviceType)
+                                : null);
+                    }
                 }
             }
         }
     }
 
     /**
-     * Attach to an Avatar described by the given descriptor.
+     * Attach to an Avatar: resolve keys from store, build realm and handlers,
+     * create signer, build connector, connect.
      *
-     * @param avatar descriptor with relay URL, login xpub, and services
-     * @return session event ID
-     * @throws IllegalStateException if no identity has been created
+     * @param avatar   descriptor with relay URL, login xpub, and services
+     * @param identity the identity to attach
+     * @return attach event ID
+     * @throws IllegalStateException if no metadata store is available
      */
-    public String attach(AvatarDescriptor avatar) throws Exception {
-        if (km.getPubKeyHex() == null) {
-            throw new IllegalStateException("No identity — call createIdentity() first");
+    public String attach(AvatarDescriptor avatar, String identity) throws Exception {
+        KeyMetaDataStore keyStore = km.getKeyMetaDataStore();
+        if (keyStore == null) {
+            throw new IllegalStateException("Metadata store is required for attach");
         }
-        NipxxConnector conn = new NipxxConnector(
-                km.getSession(), km.getRealmDerivator(), km.getPubKeyHex(), km.getPrivKey());
-        String sessionId = conn.connect(avatar);
-        km.setConnector(conn);
-        return sessionId;
+        this.currentIdentity = identity;
+
+        KeyVault vault = km.getVault();
+        int mangledIdentity = Bip32KeyDerivator.mangle(identity);
+
+        // 1. Resolve key entries from metadata store
+        List<KeyEntry> allKeys = keyStore.keysByIdentity(mangledIdentity);
+        List<KeyEntry> sshKeys = allKeys.stream()
+                .filter(k -> k.coinType() == Protocol.SSH.coinType())
+                .collect(Collectors.toList());
+        List<KeyEntry> gpgKeys = allKeys.stream()
+                .filter(k -> k.coinType() == Protocol.OPENPGP.coinType())
+                .collect(Collectors.toList());
+
+        // 2. Build service handlers
+        SshServiceHandler sshHandler = new SshServiceHandler(vault, sshKeys);
+        GpgServiceHandler gpgHandler = new GpgServiceHandler(vault, gpgKeys);
+
+        if (approvalHandler != null) {
+            sshHandler.setApprovalUI(new ApprovalHandlerAdapter(approvalHandler, "ssh"));
+            gpgHandler.setApprovalUI(new ApprovalHandlerAdapter(approvalHandler, "gpg"));
+        }
+
+        // 3. Create realm and register handlers
+        Realm realm = new Realm();
+        realm.putHandler(Protocol.SSH.coinType(), sshHandler);
+        realm.putHandler(Protocol.OPENPGP.coinType(), gpgHandler);
+        km.putRealm(identity, realm);
+
+        // 4. Create vault-backed Nostr signer
+        int identityIndex = mangledIdentity | H;
+        int[] nostrPath = {
+                44 | H,
+                Protocol.NOSTR.coinType() | H,
+                identityIndex,
+                new AlgField(AlgField.ALG_SCHNORR, 0, 0).toIndex() | H,
+                new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex() | H
+        };
+
+        NostrIdentitySigner signer = new NostrIdentitySigner() {
+            @Override
+            public String getPubkey() {
+                return NostrUtil.bytesToHex(
+                        vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, nostrPath).data());
+            }
+
+            @Override
+            public byte[] sign(byte[] hash) {
+                return vault.execute(KeyVault.FN_SIGN, hash, nostrPath).data();
+            }
+        };
+
+        // 5. Create connector and connect
+        NipxxConnector conn = new NipxxConnector(realm);
+        String attachId = conn.connect(avatar, signer);
+        km.putConnector(identity, conn);
+        return attachId;
     }
 
     /**
      * Detach from the currently attached Avatar and close the relay connection.
      */
     public void detach() throws Exception {
-        Connector connector = km.getConnector();
+        if (currentIdentity == null) {
+            log.warn("No active session to detach");
+            return;
+        }
+        Connector connector = km.getConnector(currentIdentity);
         if (connector == null) {
             log.warn("No active session to detach");
             return;
         }
         connector.disconnect();
-        km.setConnector(null);
+        km.removeConnector(currentIdentity);
+    }
+
+    /**
+     * Returns the current identity name, or {@code null}.
+     */
+    public String getCurrentIdentity() {
+        return currentIdentity;
     }
 
     /**

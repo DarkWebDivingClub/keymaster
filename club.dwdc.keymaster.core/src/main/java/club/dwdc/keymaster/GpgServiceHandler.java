@@ -1,8 +1,14 @@
 package club.dwdc.keymaster;
 
+import club.dwdc.keyexporter.core.OpenPgpKeySeeds;
+import club.dwdc.keyexporter.core.OpenPgpMetadata;
+import club.dwdc.keyexporter.core.OpenPgpSeedDeriver;
+import club.dwdc.keyexporter.openpgp.OpenPgpExport;
+import club.dwdc.keyexporter.openpgp.OpenPgpExporter;
 import club.dwdc.keyvault.core.KeyVault;
 import club.dwdc.keyvault.core.VaultResult;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -19,16 +25,14 @@ import java.util.List;
  */
 public class GpgServiceHandler extends AbstractServiceHandler {
 
-    private final String publicCertArmor;
-
     /**
-     * @param vault            vault for key derivation and signing
-     * @param keys             GPG key entries (one per role)
-     * @param publicCertArmor  pre-generated ASCII-armored OpenPGP public certificate
+     * @param vault vault for key derivation and signing
+     * @param keys  GPG key entries (one per role); metadata must include
+     *              {@code identity}, {@code creation_time}, {@code pgp_name},
+     *              {@code pgp_email}, {@code label}, and {@code key_type}
      */
-    public GpgServiceHandler(KeyVault vault, List<KeyEntry> keys, String publicCertArmor) {
+    public GpgServiceHandler(KeyVault vault, List<KeyEntry> keys) {
         super(vault, keys);
-        this.publicCertArmor = publicCertArmor;
     }
 
     /**
@@ -79,16 +83,28 @@ public class GpgServiceHandler extends AbstractServiceHandler {
     }
 
     /**
-     * Return the pre-generated OpenPGP public certificate.
+     * Generate and return the OpenPGP public certificate on-the-fly from key entry metadata.
      *
-     * @throws IllegalStateException if no public cert is available
+     * @throws IllegalStateException if generation fails or metadata is missing
      */
     @ServiceMethod(value = "get_public_cert", defaultPolicy = ApprovalPolicy.APPROVE)
     public GpgPublicCert getPublicCert() {
         checkApproval("get_public_cert", "GPG public certificate export");
-        if (publicCertArmor == null) {
-            throw new IllegalStateException("no GPG cert available");
+        if (keys.isEmpty()) {
+            throw new IllegalStateException("no GPG keys available");
         }
-        return new GpgPublicCert(publicCertArmor);
+        try {
+            String identity = keys.get(0).metadata().get("identity");
+            String pgpName = keys.get(0).metadata().get("pgp_name");
+            String pgpEmail = keys.get(0).metadata().get("pgp_email");
+            long epochSec = Long.parseLong(keys.get(0).metadata().get("creation_time"));
+            Instant creationTime = Instant.ofEpochSecond(epochSec);
+            OpenPgpKeySeeds seeds = OpenPgpSeedDeriver.derive(vault, identity);
+            OpenPgpMetadata meta = OpenPgpMetadata.create(pgpName, pgpEmail, identity, creationTime);
+            OpenPgpExport export = OpenPgpExporter.export(seeds, meta, "keymaster".toCharArray());
+            return new GpgPublicCert(export.publicKeyArmor());
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to generate GPG cert", e);
+        }
     }
 }

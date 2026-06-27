@@ -55,7 +55,7 @@ public class NostrTransport {
     private final String pubKeyHex;
 
     private NostrRelayClient relayClient;
-    private String sessionEventId;
+    private String attachEventId;
 
     /** Realm BIP-32 derivator and index for deriving service channel keys. */
     private Bip32KeyDerivator realmDerivator;
@@ -69,7 +69,7 @@ public class NostrTransport {
             new ConcurrentHashMap<>();
 
     /** Avatar login npub (hex) — set during attach for p tag markers on responses. */
-    private String avatarLoginNpub;
+    private String avatarLoginPubkey;
 
     private ServiceRequestHandler serviceRequestHandler;
 
@@ -170,15 +170,15 @@ public class NostrTransport {
      * @param avatarLoginXpub Avatar's BIP-32 login xpub (Base58Check)
      * @param services        list of service identifiers to request
      * @param realmXpub       our realm xpub to share with the Avatar
-     * @param identityNpub    the identity npub (64-char hex Nostr pubkey)
-     * @param identityPrivKey 32-byte private key for signing the connector
-     * @return session event ID on success
+     * @param identityPubkey  the identity pubkey (64-char hex Nostr pubkey)
+     * @param connectorSig    64-byte Schnorr signature of the connector hash, or {@code null}
+     * @return attach event ID on success
      */
     public String sendAttach(String avatarLoginXpub, List<String> services,
-                             String realmXpub, String identityNpub,
-                             byte[] identityPrivKey) throws Exception {
-        // Derive the avatar's login npub from the xpub for event addressing
-        String avatarPubKeyHex = xpubToNpub(avatarLoginXpub);
+                             String realmXpub, String identityPubkey,
+                             byte[] connectorSig) throws Exception {
+        // Derive the avatar's login pubkey from the xpub for event addressing
+        String avatarPubKeyHex = xpubToPubkey(avatarLoginXpub);
 
         JsonObject params = new JsonObject();
         JsonArray servicesArr = new JsonArray();
@@ -191,25 +191,21 @@ public class NostrTransport {
         JsonObject connector = new JsonObject();
         connector.addProperty("realm_xpub", realmXpub);
         connector.addProperty("login_xpub", avatarLoginXpub);
-        if (identityNpub != null) {
-            connector.addProperty("identity_npub", identityNpub);
+        if (identityPubkey != null) {
+            connector.addProperty("identity_npub", identityPubkey);
         }
         params.add("connector", connector);
 
-        // Sign the canonical connector with the identity key (Schnorr/BIP-340)
-        if (identityPrivKey != null) {
-            String canonical = canonicalizeJson(connector);
-            byte[] hash = MessageDigest.getInstance("SHA-256")
-                    .digest(canonical.getBytes(StandardCharsets.UTF_8));
-            byte[] sig = Schnorr.sign(hash, identityPrivKey, NostrEventHelper.generateAuxRand());
-            params.addProperty("connector_sig", NostrUtil.bytesToHex(sig));
+        // Attach pre-computed connector signature
+        if (connectorSig != null) {
+            params.addProperty("connector_sig", NostrUtil.bytesToHex(connectorSig));
         }
 
         // Store avatar login npub for p tag markers on responses
-        this.avatarLoginNpub = avatarPubKeyHex;
+        this.avatarLoginPubkey = avatarPubKeyHex;
 
         String eventId = sendRequest("attach", params, avatarPubKeyHex, null);
-        this.sessionEventId = eventId;
+        this.attachEventId = eventId;
 
         JsonObject response = waitForResponse(eventId, 15);
         if (response != null && response.has("result")) {
@@ -292,9 +288,9 @@ public class NostrTransport {
     }
 
     /**
-     * Extract the x-only (Schnorr) npub from a BIP-32 xpub string.
+     * Extract the x-only (Schnorr) pubkey from a BIP-32 xpub string.
      */
-    static String xpubToNpub(String xpubStr) {
+    static String xpubToPubkey(String xpubStr) {
         DeterministicKey key = DeterministicKey.deserializeB58(xpubStr, BitcoinNetwork.MAINNET);
         byte[] compressed = key.getPubKey();
         byte[] xOnly = new byte[32];
@@ -306,18 +302,18 @@ public class NostrTransport {
      * Send a detach request to end the current session.
      */
     public void sendDetach(String avatarLoginXpub) throws Exception {
-        if (sessionEventId == null) {
+        if (attachEventId == null) {
             log.warn("No active session to detach");
             return;
         }
 
-        String avatarPubKeyHex = xpubToNpub(avatarLoginXpub);
-        String eventId = sendRequest("detach", null, avatarPubKeyHex, sessionEventId);
+        String avatarPubKeyHex = xpubToPubkey(avatarLoginXpub);
+        String eventId = sendRequest("detach", null, avatarPubKeyHex, attachEventId);
         JsonObject response = waitForResponse(eventId, 10);
         if (response != null && response.has("result")) {
             log.info("Detach successful");
         }
-        sessionEventId = null;
+        attachEventId = null;
     }
 
     public void close() {
@@ -567,10 +563,10 @@ public class NostrTransport {
             tags.add(pTag);
 
             // Add "login" marker p tag for unified subscription routing
-            if (avatarLoginNpub != null) {
+            if (avatarLoginPubkey != null) {
                 JsonArray loginPTag = new JsonArray();
                 loginPTag.add("p");
-                loginPTag.add(avatarLoginNpub);
+                loginPTag.add(avatarLoginPubkey);
                 loginPTag.add("");
                 loginPTag.add("login");
                 tags.add(loginPTag);

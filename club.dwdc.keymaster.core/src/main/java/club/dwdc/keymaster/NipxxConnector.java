@@ -5,9 +5,13 @@ import club.dwdc.keyvault.core.Protocol;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import nostr.util.NostrUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.SecureRandom;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -15,48 +19,43 @@ import java.util.Map;
  * NIP-xx transport connector — implements the KeyMaster-Avatar attach/detach
  * handshake over a Nostr relay using NIP-44 encrypted kind-27235 events.
  *
- * <p>Absorbs all transport lifecycle logic previously in {@link KeyMaster}:
- * realm key derivation, {@link NostrTransport} creation, relay connect,
- * attach/detach, and service request routing via {@link ServiceChannel}.
+ * <p>Creates its own random realm derivator on each {@link #connect} call.
+ * The identity private key never enters this class — signing is delegated
+ * to a {@link NostrIdentitySigner} provided by the controller.
  */
 public class NipxxConnector implements Connector {
     private static final Logger log = LoggerFactory.getLogger(NipxxConnector.class);
 
-    private final Session session;
-    private final Bip32KeyDerivator realmDerivator;
-    private final String identityNpub;
-    private final byte[] identityPrivKey;
+    private final Realm realm;
 
     private NostrTransport transport;
     private String avatarLoginXpub;
     private final Map<String, ServiceChannel> channels = new HashMap<>();
 
     /**
-     * @param session         session containing active service handlers
-     * @param realmDerivator  BIP-32 derivator for realm transport keys
-     * @param identityNpub    identity public key (64-char hex)
-     * @param identityPrivKey 32-byte identity private key for signing
+     * @param realm realm containing active service handlers
      */
-    public NipxxConnector(Session session, Bip32KeyDerivator realmDerivator,
-                          String identityNpub, byte[] identityPrivKey) {
-        this.session = session;
-        this.realmDerivator = realmDerivator;
-        this.identityNpub = identityNpub;
-        this.identityPrivKey = identityPrivKey;
+    public NipxxConnector(Realm realm) {
+        this.realm = realm;
 
-        // Build service channels from session handlers (session-based channels
+        // Build service channels from realm handlers (realm-based channels
         // resolve handlers lazily, so this is safe even if handlers change later)
         Gson serviceGson = ServiceChannel.createGson();
-        for (int coinType : session.getHandlerCoinTypes()) {
+        for (int coinType : realm.getHandlerCoinTypes()) {
             String serviceType = coinTypeToServiceType(coinType);
             if (serviceType != null) {
-                channels.put(serviceType, new ServiceChannel(session, coinType, serviceGson));
+                channels.put(serviceType, new ServiceChannel(realm, coinType, serviceGson));
             }
         }
     }
 
     @Override
-    public String connect(AvatarDescriptor avatar) throws Exception {
+    public String connect(AvatarDescriptor avatar, NostrIdentitySigner signer) throws Exception {
+        // Create a fresh random realm derivator for this connection
+        byte[] realmSeed = new byte[64];
+        new SecureRandom().nextBytes(realmSeed);
+        Bip32KeyDerivator realmDerivator = new Bip32KeyDerivator(realmSeed);
+
         int realmIndex = 0;
         byte[] realmPrivKey = realmDerivator.derive(realmIndex);
         byte[] realmPubKey = NostrTransport.computeSchnorrPubKey(realmPrivKey);
@@ -69,8 +68,23 @@ public class NipxxConnector implements Connector {
 
         this.avatarLoginXpub = avatar.loginXpub();
 
+        // Get identity pubkey and sign the connector hash via the signer
+        String identityPubkey = signer.getPubkey();
+
+        // Build the connector JSON for signing
+        JsonObject connector = new JsonObject();
+        connector.addProperty("realm_xpub", realmXpub);
+        connector.addProperty("login_xpub", avatarLoginXpub);
+        if (identityPubkey != null) {
+            connector.addProperty("identity_npub", identityPubkey);
+        }
+        String canonical = NostrTransport.canonicalizeJson(connector);
+        byte[] hash = MessageDigest.getInstance("SHA-256")
+                .digest(canonical.getBytes(StandardCharsets.UTF_8));
+        byte[] connectorSig = signer.sign(hash);
+
         return transport.sendAttach(avatarLoginXpub, avatar.services(), realmXpub,
-                identityNpub, identityPrivKey);
+                identityPubkey, connectorSig);
     }
 
     @Override
@@ -95,7 +109,6 @@ public class NipxxConnector implements Connector {
 
         ServiceChannel channel = channels.get(serviceType);
         if (channel == null) {
-            // Try mapping service type string to coin type to check if session has a handler
             Integer coinType = serviceTypeToCoinType(serviceType);
             if (coinType == null) {
                 JsonObject response = new JsonObject();

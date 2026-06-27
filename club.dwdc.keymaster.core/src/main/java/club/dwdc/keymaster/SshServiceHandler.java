@@ -1,12 +1,17 @@
 package club.dwdc.keymaster;
 
+import club.dwdc.keyvault.core.AlgField;
+import club.dwdc.keyvault.core.Bip32KeyDerivator;
+import club.dwdc.keyvault.core.ConfigField;
 import club.dwdc.keyvault.core.KeyVault;
+import club.dwdc.keyvault.core.Protocol;
 import club.dwdc.keyvault.core.VaultResult;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.List;
 
 /**
@@ -79,5 +84,33 @@ public class SshServiceHandler extends AbstractServiceHandler {
         buf.putInt(pubKey.length);
         buf.put(pubKey);
         return buf.array();
+    }
+
+    /**
+     * Returns the SSH authorized_keys line for the given identity's Ed25519 key.
+     * Format: {@code ssh-ed25519 <base64-key-blob> <identity>}
+     *
+     * @param vault    vault for key derivation
+     * @param identity identity identifier (e.g. "alice@atlanta.com")
+     * @return authorized_keys line
+     */
+    public static String getAuthorizedKeysLine(KeyVault vault, String identity) {
+        int H = 0x80000000;
+        int identityIndex = Bip32KeyDerivator.mangle(identity) | H;
+        int[] sshPath = {
+                44 | H,
+                Protocol.SSH.coinType() | H,
+                identityIndex,
+                new AlgField(AlgField.ALG_ED25519, 0, 0).toIndex() | H,
+                new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex() | H
+        };
+
+        VaultResult pubResult = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, sshPath);
+        if (!pubResult.isOk()) {
+            throw new IllegalStateException("Failed to derive SSH key: status=" + pubResult.status());
+        }
+
+        byte[] keyBlob = buildSshEd25519KeyBlob(pubResult.data());
+        return "ssh-ed25519 " + Base64.getEncoder().encodeToString(keyBlob) + " " + identity;
     }
 }

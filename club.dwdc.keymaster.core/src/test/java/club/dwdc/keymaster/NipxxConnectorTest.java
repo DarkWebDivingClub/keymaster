@@ -27,7 +27,7 @@ class NipxxConnectorTest {
             "abandon abandon abandon abandon abandon about";
 
     private NipxxConnector connector;
-    private Session session;
+    private Realm realm;
 
     @BeforeEach
     void setUp() {
@@ -60,31 +60,20 @@ class NipxxConnectorTest {
             );
             gpgKeys.add(new KeyEntry(gpgHdPath, Map.of(
                     "label", "alice@test.com / " + roleNames[role],
-                    "key_type", "ed25519")));
+                    "key_type", "ed25519",
+                    "identity", "alice@test.com",
+                    "creation_time", "1700000000",
+                    "pgp_name", "alice@test.com",
+                    "pgp_email", "alice@test.com")));
         }
-
-        // Generate GPG cert for handler
-        String gpgCertArmor;
-        try {
-            var gpgSeeds = club.dwdc.keyexporter.core.OpenPgpSeedDeriver.derive(vault, "alice@test.com");
-            var gpgMetadata = club.dwdc.keyexporter.core.OpenPgpMetadata.create(
-                    "alice@test.com", "alice@test.com", "alice@test.com",
-                    java.time.Instant.ofEpochSecond(1));
-            var gpgExport = club.dwdc.keyexporter.openpgp.OpenPgpExporter.export(
-                    gpgSeeds, gpgMetadata, "keymaster".toCharArray());
-            gpgCertArmor = gpgExport.publicKeyArmor();
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
-        GpgServiceHandler gpgHandler = new GpgServiceHandler(vault, gpgKeys, gpgCertArmor);
+        GpgServiceHandler gpgHandler = new GpgServiceHandler(vault, gpgKeys);
         gpgHandler.setApprovalUI((m, d) -> true);
 
-        session = new Session();
-        session.putHandler(Protocol.SSH.coinType(), sshHandler);
-        session.putHandler(Protocol.OPENPGP.coinType(), gpgHandler);
+        realm = new Realm();
+        realm.putHandler(Protocol.SSH.coinType(), sshHandler);
+        realm.putHandler(Protocol.OPENPGP.coinType(), gpgHandler);
 
-        connector = new NipxxConnector(
-                session, new Bip32KeyDerivator(new byte[64]), "", new byte[32]);
+        connector = new NipxxConnector(realm);
     }
 
     @Test
@@ -131,8 +120,8 @@ class NipxxConnectorTest {
 
     @Test
     void handleServiceRequest_noHandler() {
-        // Create connector with session that only has SSH
-        Session sshOnlySession = new Session();
+        // Create connector with realm that only has SSH
+        Realm sshOnlyRealm = new Realm();
         var vault = new Bip32KeyVault(TEST_MNEMONIC);
         int mangledIdentity = Bip32KeyDerivator.mangle("alice@test.com");
         HDPath sshHdPath = HDPath.m(
@@ -142,11 +131,10 @@ class NipxxConnectorTest {
                 new ChildNumber(new AlgField(AlgField.ALG_ED25519, 0, 0).toIndex(), true),
                 new ChildNumber(new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex(), true)
         );
-        sshOnlySession.putHandler(Protocol.SSH.coinType(),
+        sshOnlyRealm.putHandler(Protocol.SSH.coinType(),
                 new SshServiceHandler(vault, List.of(new KeyEntry(sshHdPath, Map.of("comment", "test")))));
 
-        NipxxConnector sshOnlyConnector = new NipxxConnector(
-                sshOnlySession, new Bip32KeyDerivator(new byte[64]), "", new byte[32]);
+        NipxxConnector sshOnlyConnector = new NipxxConnector(sshOnlyRealm);
 
         // GPG is a known service type but has no handler registered
         JsonObject response = sshOnlyConnector.handleServiceRequest("gpg", "request_identities", null);

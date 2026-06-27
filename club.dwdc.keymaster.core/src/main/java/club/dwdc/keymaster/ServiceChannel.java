@@ -29,8 +29,8 @@ public class ServiceChannel {
     private final Gson gson;
     private Map<String, MethodBinding> bindings;
 
-    // Session-mode fields (null in direct mode)
-    private final Session session;
+    // Realm-mode fields (null in direct mode)
+    private final Realm realm;
     private final int coinType;
 
     record MethodBinding(Method method, Class<?> paramType) {}
@@ -42,27 +42,27 @@ public class ServiceChannel {
         this.handler = handler;
         this.gson = gson;
         this.bindings = buildBindings(handler);
-        this.session = null;
+        this.realm = null;
         this.coinType = 0;
     }
 
     /**
-     * Session-based constructor — resolves handler lazily from the session.
+     * Realm-based constructor — resolves handler lazily from the realm.
      *
      * <p>On each {@link #dispatch} call, the handler is resolved via
-     * {@link Session#getHandler(int)}. If the handler has changed since
+     * {@link Realm#getHandler(int)}. If the handler has changed since
      * the last call, bindings are rebuilt automatically.
      *
-     * @param session  session containing handlers
+     * @param realm    realm containing handlers
      * @param coinType protocol coin type to look up
      * @param gson     Gson instance for serialization
      */
-    public ServiceChannel(Session session, int coinType, Gson gson) {
-        this.session = session;
+    public ServiceChannel(Realm realm, int coinType, Gson gson) {
+        this.realm = realm;
         this.coinType = coinType;
         this.gson = gson;
         // Resolve handler eagerly for the initial state
-        this.handler = session.getHandler(coinType);
+        this.handler = realm.getHandler(coinType);
         this.bindings = handler != null ? buildBindings(handler) : new HashMap<>();
     }
 
@@ -74,9 +74,9 @@ public class ServiceChannel {
      * @return JSON response with either {@code result} or {@code error}
      */
     public JsonObject dispatch(String method, JsonArray params) {
-        // In session mode, re-resolve the handler on each call
-        if (session != null) {
-            AbstractServiceHandler current = session.getHandler(coinType);
+        // In realm mode, re-resolve the handler on each call
+        if (realm != null) {
+            AbstractServiceHandler current = realm.getHandler(coinType);
             if (current == null) {
                 JsonObject response = new JsonObject();
                 response.addProperty("error", "no handler for coin type " + coinType);

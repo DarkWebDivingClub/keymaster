@@ -2,15 +2,7 @@ package club.dwdc.keymaster;
 
 import club.dwdc.keyvault.core.KeyVault;
 import club.dwdc.keyvault.core.Protocol;
-import club.dwdc.keyexporter.core.OpenPgpKeySeeds;
-import club.dwdc.keyexporter.core.OpenPgpMetadata;
-import club.dwdc.keyexporter.core.OpenPgpSeedDeriver;
-import club.dwdc.keyexporter.openpgp.OpenPgpExport;
-import club.dwdc.keyexporter.openpgp.OpenPgpExporter;
-import org.bouncycastle.openpgp.PGPException;
 
-import java.io.IOException;
-import java.time.Instant;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -20,13 +12,13 @@ import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
 /**
- * Session — single source of truth for which service handlers are active.
+ * Realm — single source of truth for which service handlers are active.
  *
  * <p>Maintains a {@link ConcurrentHashMap} of handlers keyed by coin type.
  * Handlers can be populated either via {@link #resolveHandlers()} (filtering
  * keys from a {@link KeyMetaDataStore}) or manually via {@link #putHandler}.
  */
-public class Session {
+public class Realm {
 
     private final ConcurrentHashMap<Integer, AbstractServiceHandler> handlers = new ConcurrentHashMap<>();
 
@@ -43,9 +35,9 @@ public class Session {
      * @param vault            vault for cryptographic operations
      * @param approvalHandler  approval handler for handlers, or {@code null}
      */
-    public Session(List<Predicate<KeyEntry>> keySelections,
-                   KeyMetaDataStore keyMetaDataStore,
-                   KeyVault vault, ApprovalHandler approvalHandler) {
+    public Realm(List<Predicate<KeyEntry>> keySelections,
+                 KeyMetaDataStore keyMetaDataStore,
+                 KeyVault vault, ApprovalHandler approvalHandler) {
         this.keySelections = keySelections;
         this.keyMetaDataStore = keyMetaDataStore;
         this.vault = vault;
@@ -54,10 +46,10 @@ public class Session {
     }
 
     /**
-     * Manual path — creates an empty session for populating via {@link #putHandler}.
+     * Manual path — creates an empty realm for populating via {@link #putHandler}.
      * Package-private; used by KeyMasterController for direct handler registration.
      */
-    Session() {
+    Realm() {
     }
 
     /**
@@ -91,8 +83,7 @@ public class Session {
                 }
                 handlers.put(coinType, handler);
             } else if (coinType == Protocol.OPENPGP.coinType()) {
-                String certArmor = deriveCertArmor(keys);
-                GpgServiceHandler handler = new GpgServiceHandler(vault, keys, certArmor);
+                GpgServiceHandler handler = new GpgServiceHandler(vault, keys);
                 if (approvalHandler != null) {
                     handler.setApprovalUI(new ApprovalHandlerAdapter(approvalHandler, "gpg"));
                 }
@@ -130,25 +121,4 @@ public class Session {
         return Collections.unmodifiableSet(Set.copyOf(handlers.keySet()));
     }
 
-    private String deriveCertArmor(List<KeyEntry> gpgKeys) {
-        if (gpgKeys.isEmpty()) {
-            return null;
-        }
-        // Use the first key's identity to derive the cert
-        KeyEntry firstKey = gpgKeys.get(0);
-        String identityName = keyMetaDataStore.getIdentityName(firstKey.identity());
-        if (identityName == null) {
-            return null;
-        }
-        try {
-            OpenPgpKeySeeds seeds = OpenPgpSeedDeriver.derive(vault, identityName);
-            OpenPgpMetadata metadata = OpenPgpMetadata.create(
-                    identityName, identityName, identityName, Instant.ofEpochSecond(1));
-            OpenPgpExport export = OpenPgpExporter.export(
-                    seeds, metadata, "keymaster".toCharArray());
-            return export.publicKeyArmor();
-        } catch (PGPException | IOException e) {
-            throw new IllegalStateException("Failed to generate GPG cert for " + identityName, e);
-        }
-    }
 }
