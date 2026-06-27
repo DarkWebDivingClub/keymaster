@@ -36,9 +36,7 @@ public class KeyMaster {
 
     private final KeyVault vault;
 
-    private int[] path;
     private byte[] privKey;
-    private byte[] pubKey;
     private String pubKeyHex;
     private String currentIdentity;
 
@@ -85,7 +83,7 @@ public class KeyMaster {
      */
     public void deriveIdentity(String identity) {
         int identityIndex = Bip32KeyDerivator.mangle(identity) | H;
-        this.path = new int[]{PURPOSE, NOSTR_COIN, identityIndex, ALG_SCHNORR, DEFAULT_CONFIG};
+        int[] path = new int[]{PURPOSE, NOSTR_COIN, identityIndex, ALG_SCHNORR, DEFAULT_CONFIG};
         this.currentIdentity = identity;
 
         VaultResult seedResult = vault.execute(KeyVault.FN_EXPORT_SEED, null, path);
@@ -98,8 +96,7 @@ public class KeyMaster {
         if (!pubResult.isOk()) {
             throw new IllegalStateException("Vault FN_GET_PUBLIC_KEY failed: status=" + pubResult.status());
         }
-        this.pubKey = pubResult.data();
-        this.pubKeyHex = NostrUtil.bytesToHex(pubKey);
+        this.pubKeyHex = NostrUtil.bytesToHex(pubResult.data());
 
         log.info("KeyMaster identity derived: {}", pubKeyHex);
     }

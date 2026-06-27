@@ -116,6 +116,6 @@ class AbstractServiceHandlerTest {
         // We verify by creating a subclass that exposes keys size
         assertEquals(0, source.size());
         // The handler's internal list should still have 1 entry
-        // (tested indirectly through SshServiceHandler in Phase 2.1)
+        // (tested indirectly through SshServiceHandler)
     }
 }

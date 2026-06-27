@@ -55,7 +55,7 @@ public class Session {
 
     /**
      * Manual path — creates an empty session for populating via {@link #putHandler}.
-     * Package-private; used by KeyMaster during the transition period.
+     * Package-private; used by KeyMasterController for direct handler registration.
      */
     Session() {
     }
