@@ -53,8 +53,8 @@ public class KeyMasterController {
      * @return identity pubkey (64-char hex)
      */
     public String createIdentity(String identity, String pgpName, String pgpEmail) {
-        KeyVault vault = km.getVault();
-        KeyMetaDataStore keyStore = km.getKeyMetaDataStore();
+        KeyVault vault = km.vault;
+        KeyMetaDataStore keyStore = km.keyMetaDataStore;
         if (keyStore == null) {
             throw new IllegalStateException("Metadata store is required for createIdentity");
         }
@@ -126,7 +126,7 @@ public class KeyMasterController {
     public void setApprovalHandler(ApprovalHandler handler) {
         this.approvalHandler = handler;
         if (currentIdentity != null) {
-            Realm realm = km.getRealm(currentIdentity);
+            Realm realm = km.realms.get(currentIdentity);
             if (realm != null) {
                 for (int coinType : realm.getHandlerCoinTypes()) {
                     AbstractServiceHandler h = realm.getHandler(coinType);
@@ -151,13 +151,13 @@ public class KeyMasterController {
      * @throws IllegalStateException if no metadata store is available
      */
     public String attach(AvatarDescriptor avatar, String identity) throws Exception {
-        KeyMetaDataStore keyStore = km.getKeyMetaDataStore();
+        KeyMetaDataStore keyStore = km.keyMetaDataStore;
         if (keyStore == null) {
             throw new IllegalStateException("Metadata store is required for attach");
         }
         this.currentIdentity = identity;
 
-        KeyVault vault = km.getVault();
+        KeyVault vault = km.vault;
         int mangledIdentity = Bip32KeyDerivator.mangle(identity);
 
         // 1. Resolve key entries from metadata store
@@ -182,7 +182,7 @@ public class KeyMasterController {
         Realm realm = new Realm();
         realm.putHandler(Protocol.SSH.coinType(), sshHandler);
         realm.putHandler(Protocol.OPENPGP.coinType(), gpgHandler);
-        km.putRealm(identity, realm);
+        km.realms.put(identity, realm);
 
         // 4. Create vault-backed Nostr signer
         int identityIndex = mangledIdentity | H;
@@ -210,7 +210,7 @@ public class KeyMasterController {
         // 5. Create connector and connect
         NipxxConnector conn = new NipxxConnector(realm);
         String attachId = conn.connect(avatar, signer);
-        km.putConnector(identity, conn);
+        km.connectors.put(identity, conn);
         return attachId;
     }
 
@@ -222,13 +222,13 @@ public class KeyMasterController {
             log.warn("No active session to detach");
             return;
         }
-        Connector connector = km.getConnector(currentIdentity);
+        Connector connector = km.connectors.get(currentIdentity);
         if (connector == null) {
             log.warn("No active session to detach");
             return;
         }
         connector.disconnect();
-        km.removeConnector(currentIdentity);
+        km.connectors.remove(currentIdentity);
     }
 
     /**

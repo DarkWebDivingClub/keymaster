@@ -25,7 +25,7 @@ class KeyMasterControllerTest {
         var ctrl = new KeyMasterController(km);
         ctrl.createIdentity("alice@atlanta.com", "Alice", "alice@atlanta.com");
 
-        assertNull(km.getRealm("alice@atlanta.com"));
+        assertNull(km.realms.get("alice@atlanta.com"));
     }
 
     @Test
@@ -99,7 +99,7 @@ class KeyMasterControllerTest {
         Realm realm = new Realm();
         realm.putHandler(Protocol.SSH.coinType(), sshHandler);
         realm.putHandler(Protocol.OPENPGP.coinType(), gpgHandler);
-        km.putRealm("alice@atlanta.com", realm);
+        km.realms.put("alice@atlanta.com", realm);
 
         // Simulate attach setting currentIdentity by using attach with a mock connector
         // attach requires a real relay, so we test setApprovalHandler before attach:
