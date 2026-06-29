@@ -25,16 +25,6 @@
             <artifactId>club.dwdc.keyvault.nostr</artifactId>
         </dependency>
 
-        <!-- KeyExporter -->
-        <dependency>
-            <groupId>club.dwdc</groupId>
-            <artifactId>club.dwdc.keyexporter.core</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>club.dwdc</groupId>
-            <artifactId>club.dwdc.keyexporter.openpgp</artifactId>
-        </dependency>
-
         <!-- Nostr -->
         <dependency>
             <groupId>xyz.tcheeric</groupId>
@@ -44,7 +34,15 @@
         <!-- Crypto -->
         <dependency>
             <groupId>org.bouncycastle</groupId>
-            <artifactId>bcprov-jdk15to18</artifactId>
+            <artifactId>bcprov-jdk18on</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.bouncycastle</groupId>
+            <artifactId>bcpg-jdk18on</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.bouncycastle</groupId>
+            <artifactId>bcutil-jdk18on</artifactId>
         </dependency>
 
         <!-- HTTP / JSON -->

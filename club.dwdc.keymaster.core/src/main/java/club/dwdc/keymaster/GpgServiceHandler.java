@@ -1,10 +1,5 @@
 package club.dwdc.keymaster;
 
-import club.dwdc.keyexporter.core.OpenPgpKeySeeds;
-import club.dwdc.keyexporter.core.OpenPgpMetadata;
-import club.dwdc.keyexporter.core.OpenPgpSeedDeriver;
-import club.dwdc.keyexporter.openpgp.OpenPgpExport;
-import club.dwdc.keyexporter.openpgp.OpenPgpExporter;
 import club.dwdc.keyvault.core.KeyVault;
 import club.dwdc.keyvault.core.VaultResult;
 
@@ -94,15 +89,14 @@ public class GpgServiceHandler extends AbstractServiceHandler {
             throw new IllegalStateException("no GPG keys available");
         }
         try {
-            String identity = keys.get(0).metadata().get("identity");
             String pgpName = keys.get(0).metadata().get("pgp_name");
             String pgpEmail = keys.get(0).metadata().get("pgp_email");
             long epochSec = Long.parseLong(keys.get(0).metadata().get("creation_time"));
             Instant creationTime = Instant.ofEpochSecond(epochSec);
-            OpenPgpKeySeeds seeds = OpenPgpSeedDeriver.derive(vault, identity);
-            OpenPgpMetadata meta = OpenPgpMetadata.create(pgpName, pgpEmail, identity, creationTime);
-            OpenPgpExport export = OpenPgpExporter.export(seeds, meta, "keymaster".toCharArray());
-            return new GpgPublicCert(export.publicKeyArmor());
+            KeyEntry certKey = keys.get(0);
+            KeyEntry signKey = keys.get(1);
+            return new GpgPublicCert(OpenPgpCertBuilder.buildPublicCert(
+                    vault, certKey, signKey, pgpName, pgpEmail, creationTime));
         } catch (Exception e) {
             throw new IllegalStateException("Failed to generate GPG cert", e);
         }

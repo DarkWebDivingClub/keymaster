@@ -63,18 +63,6 @@
                 <version>${keyvault.version}</version>
             </dependency>
 
-            <!-- KeyExporter -->
-            <dependency>
-                <groupId>club.dwdc</groupId>
-                <artifactId>club.dwdc.keyexporter.core</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>club.dwdc</groupId>
-                <artifactId>club.dwdc.keyexporter.openpgp</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-
             <!-- Nostr -->
             <dependency>
                 <groupId>xyz.tcheeric</groupId>
@@ -85,7 +73,17 @@
             <!-- Crypto -->
             <dependency>
                 <groupId>org.bouncycastle</groupId>
-                <artifactId>bcprov-jdk15to18</artifactId>
+                <artifactId>bcprov-jdk18on</artifactId>
+                <version>1.80</version>
+            </dependency>
+            <dependency>
+                <groupId>org.bouncycastle</groupId>
+                <artifactId>bcpg-jdk18on</artifactId>
+                <version>1.80</version>
+            </dependency>
+            <dependency>
+                <groupId>org.bouncycastle</groupId>
+                <artifactId>bcutil-jdk18on</artifactId>
                 <version>1.80</version>
             </dependency>
 
