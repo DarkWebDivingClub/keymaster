@@ -88,6 +88,12 @@ public class Realm {
                     handler.setApprovalUI(new ApprovalHandlerAdapter(approvalHandler, "gpg"));
                 }
                 handlers.put(coinType, handler);
+            } else if (coinType == Protocol.NOSTR.coinType()) {
+                NostrServiceHandler handler = new NostrServiceHandler(vault, keys);
+                if (approvalHandler != null) {
+                    handler.setApprovalUI(new ApprovalHandlerAdapter(approvalHandler, "nostr"));
+                }
+                handlers.put(coinType, handler);
             }
         }
     }
