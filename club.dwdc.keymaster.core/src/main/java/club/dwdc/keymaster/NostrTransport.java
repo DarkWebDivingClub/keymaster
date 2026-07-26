@@ -30,6 +30,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.function.Consumer;
 
 /**
  * Nostr transport layer for KeyMaster-Avatar communication.
@@ -43,6 +44,9 @@ public class NostrTransport {
     private static final int PROTOCOL_KIND = 27235;
     private static final Gson GSON = new GsonBuilder().disableHtmlEscaping().create();
     private static final X9ECParameters SECP256K1 = CustomNamedCurves.getByName("secp256k1");
+
+    /** Relay connection state visible to the UI layer. */
+    public enum ConnectionState { CONNECTED, RETRYING, DISCONNECTED }
 
     static {
         if (Security.getProvider("BC") == null) {
@@ -72,6 +76,7 @@ public class NostrTransport {
     private String avatarLoginPubkey;
 
     private ServiceRequestHandler serviceRequestHandler;
+    private Consumer<ConnectionState> connectionStateListener;
 
     /**
      * Callback for handling incoming service requests (e.g. request_identities).
@@ -118,6 +123,16 @@ public class NostrTransport {
         this.serviceRequestHandler = handler;
     }
 
+    public void setConnectionStateListener(Consumer<ConnectionState> listener) {
+        this.connectionStateListener = listener;
+    }
+
+    private void fireConnectionState(ConnectionState state) {
+        if (connectionStateListener != null) {
+            connectionStateListener.accept(state);
+        }
+    }
+
     /**
      * Set the realm derivator for deterministic service channel derivation.
      */
@@ -134,6 +149,7 @@ public class NostrTransport {
             @Override
             public void onConnected() {
                 log.info("Connected to relay: {}", relayUrl);
+                fireConnectionState(ConnectionState.CONNECTED);
             }
 
             @Override
@@ -144,11 +160,13 @@ public class NostrTransport {
             @Override
             public void onError(String error) {
                 log.error("Relay error: {}", error);
+                fireConnectionState(ConnectionState.RETRYING);
             }
 
             @Override
             public void onClosed() {
                 log.info("Disconnected from relay");
+                fireConnectionState(ConnectionState.DISCONNECTED);
             }
         });
 

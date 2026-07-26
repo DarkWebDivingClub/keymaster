@@ -15,6 +15,8 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
 /**
@@ -32,6 +34,7 @@ public class KeyMasterController {
     private final KeyMaster km;
     private ApprovalHandler approvalHandler;
     private String currentIdentity;
+    private Consumer<NostrTransport.ConnectionState> connectionStateListener;
 
     /**
      * Create a controller wrapping a KeyMaster.
@@ -151,40 +154,79 @@ public class KeyMasterController {
      * @throws IllegalStateException if no metadata store is available
      */
     public String attach(AvatarDescriptor avatar, String identity) throws Exception {
-        KeyMetaDataStore keyStore = km.keyMetaDataStore;
-        if (keyStore == null) {
+        int mangledIdentity = Bip32KeyDerivator.mangle(identity);
+
+        // Resolve key entries from metadata store
+        List<KeyEntry> allKeys;
+        if (km.keyMetaDataStore != null) {
+            allKeys = km.keyMetaDataStore.keysByIdentity(mangledIdentity);
+        } else if (km.kvMetaStore != null) {
+            allKeys = km.kvMetaStore.byIdentity(identity).stream()
+                    .map(AbstractKeyEntry::toKeyEntry)
+                    .collect(Collectors.toList());
+        } else {
             throw new IllegalStateException("Metadata store is required for attach");
         }
-        this.currentIdentity = identity;
+        return doAttach(avatar, identity, allKeys);
+    }
 
+    /**
+     * Attach with additional key predicates for multi-identity scenarios.
+     * Keys matching any predicate are included in the attach.
+     *
+     * @param avatar     descriptor with relay URL, login xpub, and services
+     * @param identity   the primary identity to attach
+     * @param predicates key selection predicates (match by identity, etc.)
+     * @return attach event ID
+     */
+    public String attach(AvatarDescriptor avatar, String identity,
+                         List<Predicate<AbstractKeyEntry>> predicates) throws Exception {
+        if (km.kvMetaStore == null) {
+            return attach(avatar, identity);
+        }
+        // Collect keys from all entries matching any predicate
+        List<KeyEntry> allKeys = km.kvMetaStore.all().stream()
+                .filter(entry -> predicates.stream().anyMatch(p -> p.test(entry)))
+                .map(AbstractKeyEntry::toKeyEntry)
+                .collect(Collectors.toList());
+        return doAttach(avatar, identity, allKeys);
+    }
+
+    private String doAttach(AvatarDescriptor avatar, String identity,
+                            List<KeyEntry> allKeys) throws Exception {
+        this.currentIdentity = identity;
         KeyVault vault = km.vault;
         int mangledIdentity = Bip32KeyDerivator.mangle(identity);
 
-        // 1. Resolve key entries from metadata store
-        List<KeyEntry> allKeys = keyStore.keysByIdentity(mangledIdentity);
         List<KeyEntry> sshKeys = allKeys.stream()
                 .filter(k -> k.coinType() == Protocol.SSH.coinType())
                 .collect(Collectors.toList());
         List<KeyEntry> gpgKeys = allKeys.stream()
                 .filter(k -> k.coinType() == Protocol.OPENPGP.coinType())
                 .collect(Collectors.toList());
+        List<KeyEntry> nostrKeys = allKeys.stream()
+                .filter(k -> k.coinType() == Protocol.NOSTR.coinType())
+                .collect(Collectors.toList());
 
-        // 2. Build service handlers
+        // Build service handlers
         SshServiceHandler sshHandler = new SshServiceHandler(vault, sshKeys);
         GpgServiceHandler gpgHandler = new GpgServiceHandler(vault, gpgKeys);
+        NostrServiceHandler nostrHandler = new NostrServiceHandler(vault, nostrKeys);
 
         if (approvalHandler != null) {
             sshHandler.setApprovalUI(new ApprovalHandlerAdapter(approvalHandler, "ssh"));
             gpgHandler.setApprovalUI(new ApprovalHandlerAdapter(approvalHandler, "gpg"));
+            nostrHandler.setApprovalUI(new ApprovalHandlerAdapter(approvalHandler, "nostr"));
         }
 
-        // 3. Create realm and register handlers
+        // Create realm and register handlers
         Realm realm = new Realm();
         realm.putHandler(Protocol.SSH.coinType(), sshHandler);
         realm.putHandler(Protocol.OPENPGP.coinType(), gpgHandler);
+        realm.putHandler(Protocol.NOSTR.coinType(), nostrHandler);
         km.realms.put(identity, realm);
 
-        // 4. Create vault-backed Nostr signer
+        // Create vault-backed Nostr signer
         int identityIndex = mangledIdentity | H;
         int[] nostrPath = {
                 44 | H,
@@ -207,8 +249,11 @@ public class KeyMasterController {
             }
         };
 
-        // 5. Create connector and connect
+        // Create connector and connect
         NipxxConnector conn = new NipxxConnector(realm);
+        if (connectionStateListener != null) {
+            conn.setConnectionStateListener(connectionStateListener);
+        }
         String attachId = conn.connect(avatar, signer);
         km.connectors.put(identity, conn);
         return attachId;
@@ -229,6 +274,67 @@ public class KeyMasterController {
         }
         connector.disconnect();
         km.connectors.remove(currentIdentity);
+    }
+
+    /**
+     * Set a listener for relay connection state changes (CONNECTED, RETRYING,
+     * DISCONNECTED).  Propagated to the connector/transport on attach.
+     *
+     * @param listener state consumer, or {@code null} to clear
+     */
+    public void setConnectionStateListener(Consumer<NostrTransport.ConnectionState> listener) {
+        this.connectionStateListener = listener;
+    }
+
+    /**
+     * Restore an identity in the metadata store without creating keys.
+     * Used when restoring from a QR-scanned backup.
+     *
+     * @param identity identity identifier (e.g. "alice@atlanta.com")
+     */
+    public void restoreIdentity(String identity) {
+        KeyMetaDataStore keyStore = km.keyMetaDataStore;
+        if (keyStore == null) {
+            throw new IllegalStateException("Metadata store is required for restoreIdentity");
+        }
+        keyStore.addIdentity(identity);
+        log.info("Identity restored: {}", identity);
+    }
+
+    /**
+     * Restore GPG key metadata entries (certification + signing) for an identity.
+     * Used when restoring from a QR-scanned backup with known creation time.
+     *
+     * @param identity     identity identifier
+     * @param pgpName      user's name for OpenPGP user ID
+     * @param pgpEmail     user's email for OpenPGP user ID
+     * @param creationTime key creation time (epoch seconds)
+     */
+    public void restoreGpgKeys(String identity, String pgpName, String pgpEmail, long creationTime) {
+        KeyMetaDataStore keyStore = km.keyMetaDataStore;
+        if (keyStore == null) {
+            throw new IllegalStateException("Metadata store is required for restoreGpgKeys");
+        }
+        int mangledIdentity = Bip32KeyDerivator.mangle(identity);
+
+        String[] roleNames = {"certification", "signing"};
+        for (int role = 0; role < roleNames.length; role++) {
+            HDPath gpgHdPath = HDPath.m(
+                    new ChildNumber(44, true),
+                    new ChildNumber(Protocol.OPENPGP.coinType(), true),
+                    new ChildNumber(mangledIdentity, true),
+                    new ChildNumber(new AlgField(AlgField.ALG_ED25519, 0, role).toIndex(), true),
+                    new ChildNumber(new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex(), true)
+            );
+            keyStore.addKey(new KeyEntry(gpgHdPath, Map.of(
+                    "label", identity + " / " + roleNames[role],
+                    "key_type", "ed25519",
+                    "identity", identity,
+                    "creation_time", String.valueOf(creationTime),
+                    "pgp_name", pgpName,
+                    "pgp_email", pgpEmail)));
+        }
+        log.info("GPG keys restored for identity: {}", identity);
     }
 
     /**

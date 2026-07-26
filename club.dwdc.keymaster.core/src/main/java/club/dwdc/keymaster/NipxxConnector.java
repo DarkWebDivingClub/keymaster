@@ -14,6 +14,7 @@ import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.function.Consumer;
 
 /**
  * NIP-xx transport connector — implements the KeyMaster-Avatar attach/detach
@@ -31,6 +32,7 @@ public class NipxxConnector implements Connector {
     private NostrTransport transport;
     private String avatarLoginXpub;
     private final Map<String, ServiceChannel> channels = new HashMap<>();
+    private Consumer<NostrTransport.ConnectionState> connectionStateListener;
 
     /**
      * @param realm realm containing active service handlers
@@ -49,6 +51,10 @@ public class NipxxConnector implements Connector {
         }
     }
 
+    public void setConnectionStateListener(Consumer<NostrTransport.ConnectionState> listener) {
+        this.connectionStateListener = listener;
+    }
+
     @Override
     public String connect(AvatarDescriptor avatar, NostrIdentitySigner signer) throws Exception {
         // Create a fresh random realm derivator for this connection
@@ -64,6 +70,9 @@ public class NipxxConnector implements Connector {
         this.transport = new NostrTransport(realmPrivKey, realmPubKey);
         transport.setRealmDerivator(realmDerivator, realmIndex);
         transport.setServiceRequestHandler(this::handleServiceRequest);
+        if (connectionStateListener != null) {
+            transport.setConnectionStateListener(connectionStateListener);
+        }
         transport.connect(avatar.relay());
 
         this.avatarLoginXpub = avatar.loginXpub();
