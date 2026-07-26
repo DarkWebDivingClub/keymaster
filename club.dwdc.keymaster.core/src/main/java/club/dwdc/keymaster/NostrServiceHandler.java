@@ -65,12 +65,11 @@ public class NostrServiceHandler extends AbstractServiceHandler {
         }
     }
 
-    /** Cached HPKE path info: identity, deviceId, and key index. */
-    record HpkePathInfo(String identity, String deviceId, int index) {}
+    /** Cached HPKE path info: mangled identity index and key index. */
+    record HpkePathInfo(int mangledIdentity, int index) {}
 
     // MLS caches — populated by get_mls_pubkey, consumed by mls_sign / hpke methods
-    private final Map<ByteArrayKey, String> mlsPubkeyToIdentity = new HashMap<>();
-    private final Map<ByteArrayKey, String> mlsPubkeyToDeviceId = new HashMap<>();
+    private final Map<ByteArrayKey, Integer> mlsPubkeyToMangled = new HashMap<>();
     private final Map<ByteArrayKey, HpkePathInfo> hpkePubkeyToPath = new HashMap<>();
 
     public NostrServiceHandler(KeyVault vault, List<KeyEntry> keys) {
@@ -184,15 +183,17 @@ public class NostrServiceHandler extends AbstractServiceHandler {
     public MlsPublicKeyResponse getMlsPubkey(MlsPublicKeyRequest request) {
         checkApproval("get_mls_pubkey", "MLS public key derivation");
         KeyEntry nostrKey = findKeyByPubkey(request.nostrPubkey());
-        String identity = nostrKey.metadata().get("identity");
-        int[] path = buildMlsSignPath(identity, request.deviceId());
+        // Extract mangled identity from the Nostr key's HD path (level 2),
+        // which equals mangle(identity) — works for all identities regardless
+        // of whether identity metadata is present on the key entry.
+        int mangledIdentity = nostrKey.toVaultPath()[2] & ~H;
+        int[] path = buildMlsSignPath(mangledIdentity);
         VaultResult result = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, path);
         if (!result.isOk()) {
             throw new IllegalStateException("MLS pubkey derivation failed: status=" + result.status());
         }
         ByteArrayKey cacheKey = new ByteArrayKey(result.data().clone());
-        mlsPubkeyToIdentity.put(cacheKey, identity);
-        mlsPubkeyToDeviceId.put(cacheKey, request.deviceId());
+        mlsPubkeyToMangled.put(cacheKey, mangledIdentity);
         return new MlsPublicKeyResponse(result.data());
     }
 
@@ -203,12 +204,11 @@ public class NostrServiceHandler extends AbstractServiceHandler {
     public MlsSignResponse mlsSign(MlsSignRequest request) {
         checkApproval("mls_sign", "MLS Ed25519 signing");
         ByteArrayKey cacheKey = new ByteArrayKey(request.mlsPubkey());
-        String identity = mlsPubkeyToIdentity.get(cacheKey);
-        if (identity == null) {
+        Integer mangled = mlsPubkeyToMangled.get(cacheKey);
+        if (mangled == null) {
             throw new IllegalArgumentException("unknown MLS pubkey — call get_mls_pubkey first");
         }
-        String deviceId = mlsPubkeyToDeviceId.get(cacheKey);
-        int[] path = buildMlsSignPath(identity, deviceId);
+        int[] path = buildMlsSignPath(mangled);
         VaultResult result = vault.execute(KeyVault.FN_SIGN, request.data(), path);
         if (!result.isOk()) {
             throw new IllegalStateException("MLS sign failed: status=" + result.status());
@@ -258,18 +258,17 @@ public class NostrServiceHandler extends AbstractServiceHandler {
     public MlsHpkePubkeyResponse mlsHpkePubkeyAt(MlsHpkePubkeyRequest request) {
         checkApproval("mls_hpke_pubkey_at", "MLS HPKE public key derivation");
         ByteArrayKey cacheKey = new ByteArrayKey(request.mlsPubkey());
-        String identity = mlsPubkeyToIdentity.get(cacheKey);
-        if (identity == null) {
+        Integer mangled = mlsPubkeyToMangled.get(cacheKey);
+        if (mangled == null) {
             throw new IllegalArgumentException("unknown MLS pubkey — call get_mls_pubkey first");
         }
-        String deviceId = mlsPubkeyToDeviceId.get(cacheKey);
-        int[] path = buildHpkePath(identity, deviceId, request.index());
+        int[] path = buildHpkePath(mangled, request.index());
         VaultResult result = vault.execute(KeyVault.FN_KEY_AGREEMENT, X25519_BASEPOINT, path);
         if (!result.isOk()) {
             throw new IllegalStateException("HPKE pubkey derivation failed: status=" + result.status());
         }
         ByteArrayKey hpkeKey = new ByteArrayKey(result.data().clone());
-        hpkePubkeyToPath.put(hpkeKey, new HpkePathInfo(identity, deviceId, request.index()));
+        hpkePubkeyToPath.put(hpkeKey, new HpkePathInfo(mangled, request.index()));
         return new MlsHpkePubkeyResponse(result.data());
     }
 
@@ -283,7 +282,7 @@ public class NostrServiceHandler extends AbstractServiceHandler {
         if (info == null) {
             throw new IllegalArgumentException("unknown HPKE pubkey — call mls_hpke_pubkey_at first");
         }
-        int[] path = buildHpkePath(info.identity(), info.deviceId(), info.index());
+        int[] path = buildHpkePath(info.mangledIdentity(), info.index());
         VaultResult result = vault.execute(KeyVault.FN_KEY_AGREEMENT, request.peerPublic(), path);
         if (!result.isOk()) {
             throw new IllegalStateException("HPKE DH failed: status=" + result.status());
@@ -302,7 +301,7 @@ public class NostrServiceHandler extends AbstractServiceHandler {
         if (info == null) {
             throw new IllegalArgumentException("unknown HPKE pubkey — call mls_hpke_pubkey_at first");
         }
-        int[] path = buildHpkePath(info.identity(), info.deviceId(), info.index());
+        int[] path = buildHpkePath(info.mangledIdentity(), info.index());
         VaultResult result = vault.execute(KeyVault.FN_KEY_AGREEMENT, request.peerPublic(), path);
         if (!result.isOk()) {
             throw new IllegalStateException("HPKE decap failed: status=" + result.status());
@@ -320,11 +319,10 @@ public class NostrServiceHandler extends AbstractServiceHandler {
     public MlsNextInitKeyResponse mlsNextHpkeInitKey(MlsNextInitKeyRequest request) {
         checkApproval("mls_next_hpke_init_key", "MLS next HPKE init key");
         ByteArrayKey mlsKey = new ByteArrayKey(request.mlsPubkey());
-        String identity = mlsPubkeyToIdentity.get(mlsKey);
-        if (identity == null) {
+        Integer mangled = mlsPubkeyToMangled.get(mlsKey);
+        if (mangled == null) {
             throw new IllegalArgumentException("unknown MLS pubkey — call get_mls_pubkey first");
         }
-        String deviceId = mlsPubkeyToDeviceId.get(mlsKey);
 
         int nextIndex;
         if (request.currentHpkePubkey() == null) {
@@ -338,7 +336,7 @@ public class NostrServiceHandler extends AbstractServiceHandler {
                 // Brute-force search for the current key's index
                 nextIndex = -1;
                 for (int i = 0; i < 1000; i++) {
-                    int[] path = buildHpkePath(identity, deviceId, i);
+                    int[] path = buildHpkePath(mangled, i);
                     VaultResult r = vault.execute(KeyVault.FN_KEY_AGREEMENT, X25519_BASEPOINT, path);
                     if (r.isOk() && Arrays.equals(r.data(), request.currentHpkePubkey())) {
                         nextIndex = i + 1;
@@ -351,54 +349,41 @@ public class NostrServiceHandler extends AbstractServiceHandler {
             }
         }
 
-        int[] path = buildHpkePath(identity, deviceId, nextIndex);
+        int[] path = buildHpkePath(mangled, nextIndex);
         VaultResult result = vault.execute(KeyVault.FN_KEY_AGREEMENT, X25519_BASEPOINT, path);
         if (!result.isOk()) {
             throw new IllegalStateException("next HPKE init key failed: status=" + result.status());
         }
         ByteArrayKey hpkeKey = new ByteArrayKey(result.data().clone());
-        hpkePubkeyToPath.put(hpkeKey, new HpkePathInfo(identity, deviceId, nextIndex));
+        hpkePubkeyToPath.put(hpkeKey, new HpkePathInfo(mangled, nextIndex));
         return new MlsNextInitKeyResponse(result.data(), nextIndex);
     }
 
     // -- private helpers --
 
     /**
-     * Mangle an identity for MLS path derivation.
-     * If deviceId is present, mangles "identity:deviceId"; otherwise just "identity".
-     */
-    private static int mlsMangle(String identity, String deviceId) {
-        String input = (deviceId != null && !deviceId.isEmpty())
-                ? identity + ":" + deviceId
-                : identity;
-        return Bip32KeyDerivator.mangle(input);
-    }
-
-    /**
-     * Build the MLS Ed25519 signing key path.
+     * Build the MLS Ed25519 signing key path from a pre-computed mangled identity.
      * {@code m/44'/1242'/mangle'/AlgField(ED25519,0,ROLE_SIGN)'/ConfigField(NONE,0)'}
      */
-    private static int[] buildMlsSignPath(String identity, String deviceId) {
-        int mangled = mlsMangle(identity, deviceId);
+    private static int[] buildMlsSignPath(int mangledIdentity) {
         return new int[]{
                 44 | H,
                 Protocol.MLS.coinType() | H,
-                mangled | H,
+                mangledIdentity | H,
                 new AlgField(AlgField.ALG_ED25519, 0, AlgField.ROLE_SIGN).toIndex() | H,
                 new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex() | H
         };
     }
 
     /**
-     * Build an MLS HPKE key path at the given index.
+     * Build an MLS HPKE key path at the given index from a pre-computed mangled identity.
      * {@code m/44'/1242'/mangle'/AlgField(ED25519,0,ROLE_HPKE)'/ConfigField(NONE,index)'}
      */
-    private static int[] buildHpkePath(String identity, String deviceId, int index) {
-        int mangled = mlsMangle(identity, deviceId);
+    private static int[] buildHpkePath(int mangledIdentity, int index) {
         return new int[]{
                 44 | H,
                 Protocol.MLS.coinType() | H,
-                mangled | H,
+                mangledIdentity | H,
                 new AlgField(AlgField.ALG_ED25519, 0, AlgField.ROLE_HPKE).toIndex() | H,
                 new ConfigField(ConfigField.CSPRNG_NONE, index).toIndex() | H
         };

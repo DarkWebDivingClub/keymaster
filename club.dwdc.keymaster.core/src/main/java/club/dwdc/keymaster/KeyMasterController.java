@@ -57,14 +57,10 @@ public class KeyMasterController {
      */
     public String createIdentity(String identity, String pgpName, String pgpEmail) {
         KeyVault vault = km.vault;
-        KeyMetaDataStore keyStore = km.keyMetaDataStore;
-        if (keyStore == null) {
-            throw new IllegalStateException("Metadata store is required for createIdentity");
-        }
         int mangledIdentity = Bip32KeyDerivator.mangle(identity);
         long creationTime = Instant.now().getEpochSecond();
 
-        // 1. SSH key entry — metadata-only
+        // Build HD paths
         HDPath sshHdPath = HDPath.m(
                 new ChildNumber(44, true),
                 new ChildNumber(Protocol.SSH.coinType(), true),
@@ -72,29 +68,19 @@ public class KeyMasterController {
                 new ChildNumber(new AlgField(AlgField.ALG_ED25519, 0, 0).toIndex(), true),
                 new ChildNumber(new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex(), true)
         );
-        KeyEntry sshKey = new KeyEntry(sshHdPath, Map.of("comment", identity));
 
-        // 2. GPG key entries (certification + signing) — metadata-only
         String[] roleNames = {"certification", "signing"};
-        List<KeyEntry> gpgKeys = new ArrayList<>();
+        List<HDPath> gpgPaths = new ArrayList<>();
         for (int role = 0; role < roleNames.length; role++) {
-            HDPath gpgHdPath = HDPath.m(
+            gpgPaths.add(HDPath.m(
                     new ChildNumber(44, true),
                     new ChildNumber(Protocol.OPENPGP.coinType(), true),
                     new ChildNumber(mangledIdentity, true),
                     new ChildNumber(new AlgField(AlgField.ALG_ED25519, 0, role).toIndex(), true),
                     new ChildNumber(new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex(), true)
-            );
-            gpgKeys.add(new KeyEntry(gpgHdPath, Map.of(
-                    "label", identity + " / " + roleNames[role],
-                    "key_type", "ed25519",
-                    "identity", identity,
-                    "creation_time", String.valueOf(creationTime),
-                    "pgp_name", pgpName,
-                    "pgp_email", pgpEmail)));
+            ));
         }
 
-        // 3. Nostr key entry — metadata-only
         HDPath nostrHdPath = HDPath.m(
                 new ChildNumber(44, true),
                 new ChildNumber(Protocol.NOSTR.coinType(), true),
@@ -102,9 +88,7 @@ public class KeyMasterController {
                 new ChildNumber(new AlgField(AlgField.ALG_SCHNORR, 0, 0).toIndex(), true),
                 new ChildNumber(new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex(), true)
         );
-        KeyEntry nostrKey = new KeyEntry(nostrHdPath, Map.of("identity", identity));
 
-        // 4. MLS signing key entry — metadata-only
         HDPath mlsHdPath = HDPath.m(
                 new ChildNumber(44, true),
                 new ChildNumber(Protocol.MLS.coinType(), true),
@@ -112,18 +96,50 @@ public class KeyMasterController {
                 new ChildNumber(new AlgField(AlgField.ALG_ED25519, 0, AlgField.ROLE_SIGN).toIndex(), true),
                 new ChildNumber(new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex(), true)
         );
-        KeyEntry mlsKey = new KeyEntry(mlsHdPath, Map.of("identity", identity));
 
-        // Store in metadata store
-        keyStore.addIdentity(identity);
-        keyStore.addKey(sshKey);
-        for (KeyEntry gpgKey : gpgKeys) {
-            keyStore.addKey(gpgKey);
+        // Store via whichever metadata store is available
+        KeyMetaDataStore keyStore = km.keyMetaDataStore;
+        KVMetaStore kvStore = km.kvMetaStore;
+
+        if (keyStore != null) {
+            // Desktop path — generic KeyEntry
+            keyStore.addIdentity(identity);
+            keyStore.addKey(new KeyEntry(sshHdPath, Map.of("comment", identity)));
+            for (int role = 0; role < roleNames.length; role++) {
+                keyStore.addKey(new KeyEntry(gpgPaths.get(role), Map.of(
+                        "label", identity + " / " + roleNames[role],
+                        "key_type", "ed25519",
+                        "identity", identity,
+                        "creation_time", String.valueOf(creationTime),
+                        "pgp_name", pgpName,
+                        "pgp_email", pgpEmail)));
+            }
+            keyStore.addKey(new KeyEntry(nostrHdPath, Map.of("identity", identity)));
+            keyStore.addKey(new KeyEntry(mlsHdPath, Map.of("identity", identity)));
+        } else if (kvStore != null) {
+            // Android path — typed key entries
+            kvStore.put(new SSHKeyEntry(sshHdPath, identity, identity));
+            for (int role = 0; role < roleNames.length; role++) {
+                kvStore.put(new GPGKeyEntry(gpgPaths.get(role), identity,
+                        pgpName, pgpEmail, creationTime));
+            }
+            // Derive Nostr pubkey for the NostrKeyEntry
+            int identityIndex = mangledIdentity | H;
+            int[] nostrPath = {
+                    44 | H,
+                    Protocol.NOSTR.coinType() | H,
+                    identityIndex,
+                    new AlgField(AlgField.ALG_SCHNORR, 0, 0).toIndex() | H,
+                    new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex() | H
+            };
+            String pubkeyHex = NostrUtil.bytesToHex(
+                    vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, nostrPath).data());
+            kvStore.put(new NostrKeyEntry(nostrHdPath, identity, pubkeyHex));
+        } else {
+            throw new IllegalStateException("No metadata store available for createIdentity");
         }
-        keyStore.addKey(nostrKey);
-        keyStore.addKey(mlsKey);
 
-        // 6. Derive pubkey from vault (no private key export)
+        // Derive pubkey from vault (no private key export)
         int identityIndex = mangledIdentity | H;
         int[] nostrPath = {
                 44 | H,
