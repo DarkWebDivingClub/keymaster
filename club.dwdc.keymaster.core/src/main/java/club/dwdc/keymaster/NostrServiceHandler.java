@@ -1,6 +1,10 @@
 package club.dwdc.keymaster;
 
+import club.dwdc.keyvault.core.AlgField;
+import club.dwdc.keyvault.core.Bip32KeyDerivator;
+import club.dwdc.keyvault.core.ConfigField;
 import club.dwdc.keyvault.core.KeyVault;
+import club.dwdc.keyvault.core.Protocol;
 import club.dwdc.keyvault.core.VaultResult;
 import nostr.crypto.nip44.EncryptedPayloads;
 import nostr.util.NostrUtil;
@@ -11,25 +15,29 @@ import javax.crypto.Mac;
 import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.security.Security;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
- * Service handler for Nostr identity operations.
+ * Service handler for Nostr identity operations and MLS key management.
  *
- * <p>Provides six methods: {@code get_public_keys}, {@code sign_event},
+ * <p>Provides Nostr methods ({@code get_public_keys}, {@code sign_event},
  * {@code nip04_encrypt}, {@code nip04_decrypt}, {@code nip44_encrypt},
- * and {@code nip44_decrypt}, all backed by a {@link KeyVault} and a
+ * {@code nip44_decrypt}) and MLS methods ({@code get_mls_pubkey},
+ * {@code mls_sign}, {@code sign_account_identity_proof},
+ * {@code mls_hpke_pubkey_at}, {@code mls_hpke_dh}, {@code mls_hpke_decap},
+ * {@code mls_next_hpke_init_key}), all backed by a {@link KeyVault} and a
  * list of {@link KeyEntry} objects at coin type 1237 (Nostr).
  *
  * <p>All cryptographic operations that require the private key (ECDH,
- * Schnorr signing) are delegated to the vault. The symmetric encryption
- * (AES-256-CBC for NIP-04, ChaCha20 for NIP-44) happens in this handler
- * using the ECDH-derived shared secret.
+ * Schnorr signing, Ed25519 signing, X25519 DH) are delegated to the vault.
  */
 public class NostrServiceHandler extends AbstractServiceHandler {
 
@@ -38,6 +46,32 @@ public class NostrServiceHandler extends AbstractServiceHandler {
             Security.insertProviderAt(new BouncyCastleProvider(), 1);
         }
     }
+
+    private static final int H = 0x80000000;
+
+    /** X25519 basepoint (u=9). */
+    private static final byte[] X25519_BASEPOINT = new byte[32];
+    static {
+        X25519_BASEPOINT[0] = 9;
+    }
+
+    /** Wrapper for byte[] with proper equals/hashCode, for use as map keys. */
+    record ByteArrayKey(byte[] data) {
+        @Override public boolean equals(Object o) {
+            return o instanceof ByteArrayKey other && Arrays.equals(data, other.data);
+        }
+        @Override public int hashCode() {
+            return Arrays.hashCode(data);
+        }
+    }
+
+    /** Cached HPKE path info: identity, deviceId, and key index. */
+    record HpkePathInfo(String identity, String deviceId, int index) {}
+
+    // MLS caches — populated by get_mls_pubkey, consumed by mls_sign / hpke methods
+    private final Map<ByteArrayKey, String> mlsPubkeyToIdentity = new HashMap<>();
+    private final Map<ByteArrayKey, String> mlsPubkeyToDeviceId = new HashMap<>();
+    private final Map<ByteArrayKey, HpkePathInfo> hpkePubkeyToPath = new HashMap<>();
 
     public NostrServiceHandler(KeyVault vault, List<KeyEntry> keys) {
         super(vault, keys);
@@ -141,7 +175,234 @@ public class NostrServiceHandler extends AbstractServiceHandler {
         }
     }
 
+    // ==================== MLS methods ====================
+
+    /**
+     * Derive the MLS Ed25519 signing public key for a Nostr identity.
+     */
+    @ServiceMethod(value = "get_mls_pubkey", defaultPolicy = ApprovalPolicy.APPROVE)
+    public MlsPublicKeyResponse getMlsPubkey(MlsPublicKeyRequest request) {
+        checkApproval("get_mls_pubkey", "MLS public key derivation");
+        KeyEntry nostrKey = findKeyByPubkey(request.nostrPubkey());
+        String identity = nostrKey.metadata().get("identity");
+        int[] path = buildMlsSignPath(identity, request.deviceId());
+        VaultResult result = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, path);
+        if (!result.isOk()) {
+            throw new IllegalStateException("MLS pubkey derivation failed: status=" + result.status());
+        }
+        ByteArrayKey cacheKey = new ByteArrayKey(result.data().clone());
+        mlsPubkeyToIdentity.put(cacheKey, identity);
+        mlsPubkeyToDeviceId.put(cacheKey, request.deviceId());
+        return new MlsPublicKeyResponse(result.data());
+    }
+
+    /**
+     * Sign data with the MLS Ed25519 signing key.
+     */
+    @ServiceMethod(value = "mls_sign", defaultPolicy = ApprovalPolicy.APPROVE)
+    public MlsSignResponse mlsSign(MlsSignRequest request) {
+        checkApproval("mls_sign", "MLS Ed25519 signing");
+        ByteArrayKey cacheKey = new ByteArrayKey(request.mlsPubkey());
+        String identity = mlsPubkeyToIdentity.get(cacheKey);
+        if (identity == null) {
+            throw new IllegalArgumentException("unknown MLS pubkey — call get_mls_pubkey first");
+        }
+        String deviceId = mlsPubkeyToDeviceId.get(cacheKey);
+        int[] path = buildMlsSignPath(identity, deviceId);
+        VaultResult result = vault.execute(KeyVault.FN_SIGN, request.data(), path);
+        if (!result.isOk()) {
+            throw new IllegalStateException("MLS sign failed: status=" + result.status());
+        }
+        return new MlsSignResponse(result.data());
+    }
+
+    /**
+     * Sign an MLS account identity proof (Kind 450 event) with the Nostr key.
+     *
+     * <p>Constructs a NIP-01 serialized event, SHA-256 hashes it, and Schnorr
+     * signs with the Nostr key identified by {@code accountIdentity}.
+     */
+    @ServiceMethod(value = "sign_account_identity_proof", defaultPolicy = ApprovalPolicy.APPROVE)
+    public MlsAccountIdentityProofResponse signAccountIdentityProof(MlsAccountIdentityProofRequest request) {
+        checkApproval("sign_account_identity_proof", "MLS account identity proof signing");
+        KeyEntry nostrKey = findKeyByPubkey(request.accountIdentity());
+        String pubkeyHex = NostrUtil.bytesToHex(request.accountIdentity());
+        String mlsSigPubkeyHex = NostrUtil.bytesToHex(request.mlsSignaturePublicKey());
+
+        // NIP-01 serialized event for Kind 450
+        String serialized = "[0,\"" + pubkeyHex + "\",0,450,"
+                + "[[\"mls_signature_public_key\",\"" + mlsSigPubkeyHex + "\"],"
+                + "[\"ciphersuite\",\"" + request.ciphersuite() + "\"],"
+                + "[\"signature_scheme\",\"" + request.signatureScheme() + "\"]],"
+                + "\"\"]";
+
+        try {
+            byte[] hash = MessageDigest.getInstance("SHA-256")
+                    .digest(serialized.getBytes(StandardCharsets.UTF_8));
+            VaultResult result = vault.execute(KeyVault.FN_SIGN, hash, nostrKey.toVaultPath());
+            if (!result.isOk()) {
+                throw new IllegalStateException(
+                        "account identity proof sign failed: status=" + result.status());
+            }
+            return new MlsAccountIdentityProofResponse(result.data());
+        } catch (Exception e) {
+            if (e instanceof IllegalStateException) throw (IllegalStateException) e;
+            throw new IllegalStateException("account identity proof failed", e);
+        }
+    }
+
+    /**
+     * Derive an HPKE X25519 public key at a given index.
+     */
+    @ServiceMethod(value = "mls_hpke_pubkey_at", defaultPolicy = ApprovalPolicy.APPROVE)
+    public MlsHpkePubkeyResponse mlsHpkePubkeyAt(MlsHpkePubkeyRequest request) {
+        checkApproval("mls_hpke_pubkey_at", "MLS HPKE public key derivation");
+        ByteArrayKey cacheKey = new ByteArrayKey(request.mlsPubkey());
+        String identity = mlsPubkeyToIdentity.get(cacheKey);
+        if (identity == null) {
+            throw new IllegalArgumentException("unknown MLS pubkey — call get_mls_pubkey first");
+        }
+        String deviceId = mlsPubkeyToDeviceId.get(cacheKey);
+        int[] path = buildHpkePath(identity, deviceId, request.index());
+        VaultResult result = vault.execute(KeyVault.FN_KEY_AGREEMENT, X25519_BASEPOINT, path);
+        if (!result.isOk()) {
+            throw new IllegalStateException("HPKE pubkey derivation failed: status=" + result.status());
+        }
+        ByteArrayKey hpkeKey = new ByteArrayKey(result.data().clone());
+        hpkePubkeyToPath.put(hpkeKey, new HpkePathInfo(identity, deviceId, request.index()));
+        return new MlsHpkePubkeyResponse(result.data());
+    }
+
+    /**
+     * Perform X25519 DH key agreement with a peer's public key.
+     */
+    @ServiceMethod(value = "mls_hpke_dh", defaultPolicy = ApprovalPolicy.APPROVE)
+    public MlsHpkeDhResponse mlsHpkeDh(MlsHpkeDhRequest request) {
+        checkApproval("mls_hpke_dh", "MLS HPKE DH key agreement");
+        HpkePathInfo info = hpkePubkeyToPath.get(new ByteArrayKey(request.hpkePubkey()));
+        if (info == null) {
+            throw new IllegalArgumentException("unknown HPKE pubkey — call mls_hpke_pubkey_at first");
+        }
+        int[] path = buildHpkePath(info.identity(), info.deviceId(), info.index());
+        VaultResult result = vault.execute(KeyVault.FN_KEY_AGREEMENT, request.peerPublic(), path);
+        if (!result.isOk()) {
+            throw new IllegalStateException("HPKE DH failed: status=" + result.status());
+        }
+        return new MlsHpkeDhResponse(result.data());
+    }
+
+    /**
+     * Perform X25519 DH decapsulation (same operation as {@code mls_hpke_dh},
+     * exposed under a separate wire name for clarity).
+     */
+    @ServiceMethod(value = "mls_hpke_decap", defaultPolicy = ApprovalPolicy.APPROVE)
+    public MlsHpkeDhResponse mlsHpkeDecap(MlsHpkeDhRequest request) {
+        checkApproval("mls_hpke_decap", "MLS HPKE decapsulation");
+        HpkePathInfo info = hpkePubkeyToPath.get(new ByteArrayKey(request.hpkePubkey()));
+        if (info == null) {
+            throw new IllegalArgumentException("unknown HPKE pubkey — call mls_hpke_pubkey_at first");
+        }
+        int[] path = buildHpkePath(info.identity(), info.deviceId(), info.index());
+        VaultResult result = vault.execute(KeyVault.FN_KEY_AGREEMENT, request.peerPublic(), path);
+        if (!result.isOk()) {
+            throw new IllegalStateException("HPKE decap failed: status=" + result.status());
+        }
+        return new MlsHpkeDhResponse(result.data());
+    }
+
+    /**
+     * Find the next HPKE init key index after the current one.
+     *
+     * <p>If {@code currentHpkePubkey} is null, returns index 0.
+     * Otherwise searches the cache (fallback: brute-force up to 1000 indices).
+     */
+    @ServiceMethod(value = "mls_next_hpke_init_key", defaultPolicy = ApprovalPolicy.APPROVE)
+    public MlsNextInitKeyResponse mlsNextHpkeInitKey(MlsNextInitKeyRequest request) {
+        checkApproval("mls_next_hpke_init_key", "MLS next HPKE init key");
+        ByteArrayKey mlsKey = new ByteArrayKey(request.mlsPubkey());
+        String identity = mlsPubkeyToIdentity.get(mlsKey);
+        if (identity == null) {
+            throw new IllegalArgumentException("unknown MLS pubkey — call get_mls_pubkey first");
+        }
+        String deviceId = mlsPubkeyToDeviceId.get(mlsKey);
+
+        int nextIndex;
+        if (request.currentHpkePubkey() == null) {
+            nextIndex = 0;
+        } else {
+            ByteArrayKey currentKey = new ByteArrayKey(request.currentHpkePubkey());
+            HpkePathInfo cached = hpkePubkeyToPath.get(currentKey);
+            if (cached != null) {
+                nextIndex = cached.index() + 1;
+            } else {
+                // Brute-force search for the current key's index
+                nextIndex = -1;
+                for (int i = 0; i < 1000; i++) {
+                    int[] path = buildHpkePath(identity, deviceId, i);
+                    VaultResult r = vault.execute(KeyVault.FN_KEY_AGREEMENT, X25519_BASEPOINT, path);
+                    if (r.isOk() && Arrays.equals(r.data(), request.currentHpkePubkey())) {
+                        nextIndex = i + 1;
+                        break;
+                    }
+                }
+                if (nextIndex < 0) {
+                    throw new IllegalArgumentException("current HPKE pubkey not found in first 1000 indices");
+                }
+            }
+        }
+
+        int[] path = buildHpkePath(identity, deviceId, nextIndex);
+        VaultResult result = vault.execute(KeyVault.FN_KEY_AGREEMENT, X25519_BASEPOINT, path);
+        if (!result.isOk()) {
+            throw new IllegalStateException("next HPKE init key failed: status=" + result.status());
+        }
+        ByteArrayKey hpkeKey = new ByteArrayKey(result.data().clone());
+        hpkePubkeyToPath.put(hpkeKey, new HpkePathInfo(identity, deviceId, nextIndex));
+        return new MlsNextInitKeyResponse(result.data(), nextIndex);
+    }
+
     // -- private helpers --
+
+    /**
+     * Mangle an identity for MLS path derivation.
+     * If deviceId is present, mangles "identity:deviceId"; otherwise just "identity".
+     */
+    private static int mlsMangle(String identity, String deviceId) {
+        String input = (deviceId != null && !deviceId.isEmpty())
+                ? identity + ":" + deviceId
+                : identity;
+        return Bip32KeyDerivator.mangle(input);
+    }
+
+    /**
+     * Build the MLS Ed25519 signing key path.
+     * {@code m/44'/1242'/mangle'/AlgField(ED25519,0,ROLE_SIGN)'/ConfigField(NONE,0)'}
+     */
+    private static int[] buildMlsSignPath(String identity, String deviceId) {
+        int mangled = mlsMangle(identity, deviceId);
+        return new int[]{
+                44 | H,
+                Protocol.MLS.coinType() | H,
+                mangled | H,
+                new AlgField(AlgField.ALG_ED25519, 0, AlgField.ROLE_SIGN).toIndex() | H,
+                new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex() | H
+        };
+    }
+
+    /**
+     * Build an MLS HPKE key path at the given index.
+     * {@code m/44'/1242'/mangle'/AlgField(ED25519,0,ROLE_HPKE)'/ConfigField(NONE,index)'}
+     */
+    private static int[] buildHpkePath(String identity, String deviceId, int index) {
+        int mangled = mlsMangle(identity, deviceId);
+        return new int[]{
+                44 | H,
+                Protocol.MLS.coinType() | H,
+                mangled | H,
+                new AlgField(AlgField.ALG_ED25519, 0, AlgField.ROLE_HPKE).toIndex() | H,
+                new ConfigField(ConfigField.CSPRNG_NONE, index).toIndex() | H
+        };
+    }
 
     /**
      * Find the key entry whose vault-derived public key matches the given bytes.

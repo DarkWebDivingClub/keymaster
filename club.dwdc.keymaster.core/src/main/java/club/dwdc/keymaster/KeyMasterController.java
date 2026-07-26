@@ -104,15 +104,26 @@ public class KeyMasterController {
         );
         KeyEntry nostrKey = new KeyEntry(nostrHdPath, Map.of("identity", identity));
 
-        // 4. Store in metadata store
+        // 4. MLS signing key entry — metadata-only
+        HDPath mlsHdPath = HDPath.m(
+                new ChildNumber(44, true),
+                new ChildNumber(Protocol.MLS.coinType(), true),
+                new ChildNumber(mangledIdentity, true),
+                new ChildNumber(new AlgField(AlgField.ALG_ED25519, 0, AlgField.ROLE_SIGN).toIndex(), true),
+                new ChildNumber(new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex(), true)
+        );
+        KeyEntry mlsKey = new KeyEntry(mlsHdPath, Map.of("identity", identity));
+
+        // Store in metadata store
         keyStore.addIdentity(identity);
         keyStore.addKey(sshKey);
         for (KeyEntry gpgKey : gpgKeys) {
             keyStore.addKey(gpgKey);
         }
         keyStore.addKey(nostrKey);
+        keyStore.addKey(mlsKey);
 
-        // 5. Derive pubkey from vault (no private key export)
+        // 6. Derive pubkey from vault (no private key export)
         int identityIndex = mangledIdentity | H;
         int[] nostrPath = {
                 44 | H,
