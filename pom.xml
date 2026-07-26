@@ -5,7 +5,7 @@
 
     <groupId>club.dwdc</groupId>
     <artifactId>club.dwdc.keymaster</artifactId>
-    <version>0.3.0</version>
+    <version>0.4.0</version>
     <packaging>pom</packaging>
 
     <name>club.dwdc.keymaster</name>
@@ -30,7 +30,7 @@
         <maven.compiler.source>21</maven.compiler.source>
         <maven.compiler.target>21</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <keyvault.version>0.1.0</keyvault.version>
+        <keyvault.version>0.2.0</keyvault.version>
         <junit.version>5.13.1</junit.version>
         <surefire.version>3.5.2</surefire.version>
         <slf4j.version>2.0.9</slf4j.version>
