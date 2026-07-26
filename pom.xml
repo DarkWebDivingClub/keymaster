@@ -5,7 +5,7 @@
 
     <groupId>club.dwdc</groupId>
     <artifactId>club.dwdc.keymaster</artifactId>
-    <version>0.2.0</version>
+    <version>0.3.0</version>
     <packaging>pom</packaging>
 
     <name>club.dwdc.keymaster</name>
