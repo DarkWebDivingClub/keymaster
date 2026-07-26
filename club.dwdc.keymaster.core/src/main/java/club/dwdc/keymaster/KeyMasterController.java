@@ -94,14 +94,25 @@ public class KeyMasterController {
                     "pgp_email", pgpEmail)));
         }
 
-        // 3. Store in metadata store
+        // 3. Nostr key entry — metadata-only
+        HDPath nostrHdPath = HDPath.m(
+                new ChildNumber(44, true),
+                new ChildNumber(Protocol.NOSTR.coinType(), true),
+                new ChildNumber(mangledIdentity, true),
+                new ChildNumber(new AlgField(AlgField.ALG_SCHNORR, 0, 0).toIndex(), true),
+                new ChildNumber(new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex(), true)
+        );
+        KeyEntry nostrKey = new KeyEntry(nostrHdPath, Map.of("identity", identity));
+
+        // 4. Store in metadata store
         keyStore.addIdentity(identity);
         keyStore.addKey(sshKey);
         for (KeyEntry gpgKey : gpgKeys) {
             keyStore.addKey(gpgKey);
         }
+        keyStore.addKey(nostrKey);
 
-        // 4. Derive pubkey from vault (no private key export)
+        // 5. Derive pubkey from vault (no private key export)
         int identityIndex = mangledIdentity | H;
         int[] nostrPath = {
                 44 | H,
