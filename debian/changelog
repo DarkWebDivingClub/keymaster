@@ -1,0 +1,27 @@
+keymaster-desktop (0.5.0-1) resolute; urgency=medium
+
+  * Mission 24 — NostrServiceHandler: Nostr signing and encryption
+  * Mission 25 — MLS methods for WhiteNoise key delegation
+  * Add typed key entries, KVMetaStore, multi-identity attach
+  * Add Nostr and MLS key entries to createIdentity
+
+ -- Rene Malmgren <duke_h3@dwdc.club>  Tue, 29 Jul 2026 18:00:00 +0200
+
+keymaster-desktop (0.2.0-2) resolute; urgency=medium
+
+  * Mission 21 — multi-identity realm and identity store cleanup
+
+ -- Rene Malmgren <duke_h3@dwdc.club>  Wed, 02 Jul 2026 12:00:00 +0200
+
+keymaster-desktop (0.2.0-1) resolute; urgency=medium
+
+  * Add km-daemon.service (systemd user unit)
+
+ -- Rene Malmgren <duke_h3@dwdc.club>  Mon, 30 Jun 2026 16:00:00 +0200
+
+keymaster-desktop (0.2.0) resolute; urgency=medium
+
+  * Initial Debian packaging
+  * Wrapper scripts for km-daemon and km-cli
+
+ -- Rene Malmgren <duke_h3@dwdc.club>  Mon, 30 Jun 2026 12:00:00 +0200

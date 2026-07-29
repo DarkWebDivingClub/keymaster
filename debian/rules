@@ -1,0 +1,24 @@
+#!/usr/bin/make -f
+
+export JAVA_HOME = /usr/lib/jvm/java-21-openjdk-amd64
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	mvn clean package -DskipTests
+
+override_dh_auto_install:
+	install -D -m 644 club.dwdc.keymaster.daemon/target/km-daemon.jar \
+		debian/keymaster-desktop/usr/lib/keymaster-desktop/km-daemon.jar
+	install -D -m 644 club.dwdc.keymaster.cli/target/km-cli.jar \
+		debian/keymaster-desktop/usr/lib/keymaster-desktop/km-cli.jar
+	install -D -m 755 debian/km-daemon.sh \
+		debian/keymaster-desktop/usr/bin/km-daemon
+	install -D -m 755 debian/km-cli.sh \
+		debian/keymaster-desktop/usr/bin/km-cli
+	install -D -m 644 debian/km-daemon.service \
+		debian/keymaster-desktop/usr/lib/systemd/user/km-daemon.service
+
+override_dh_auto_test:
+	# skip tests during package build

@@ -1,0 +1,14 @@
+Source: keymaster-desktop
+Section: utils
+Priority: optional
+Maintainer: Rene Malmgren <duke_h3@dwdc.club>
+Build-Depends: debhelper-compat (= 13), openjdk-21-jdk-headless, maven
+Standards-Version: 4.7.0
+Rules-Requires-Root: no
+
+Package: keymaster-desktop
+Architecture: all
+Depends: ${misc:Depends}, openjdk-21-jre-headless
+Description: KeyMaster desktop daemon and CLI
+ Unix domain socket daemon for identity management and key operations,
+ with a thin JSON-RPC CLI client. Part of the KeyMaster ecosystem.
