@@ -43,8 +43,8 @@ class NostrIdentitySignerTest {
         NostrIdentitySigner signer = new NostrIdentitySigner() {
             @Override
             public String getPubkey() {
-                return NostrUtil.bytesToHex(
-                        vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, nostrPath).data());
+                byte[] compressed = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, nostrPath).data();
+                return NostrUtil.bytesToHex(java.util.Arrays.copyOfRange(compressed, 1, 33));
             }
 
             @Override

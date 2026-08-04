@@ -5,14 +5,18 @@ import club.dwdc.keyvault.core.Bip32KeyDerivator;
 import club.dwdc.keyvault.core.ConfigField;
 import club.dwdc.keyvault.core.KeyVault;
 import club.dwdc.keyvault.core.Protocol;
+import club.dwdc.keyvault.core.VaultResult;
 import nostr.util.NostrUtil;
+import org.bitcoinj.base.BitcoinNetwork;
 import org.bitcoinj.crypto.ChildNumber;
+import org.bitcoinj.crypto.HDKeyDerivation;
 import org.bitcoinj.crypto.HDPath;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
@@ -56,9 +60,13 @@ public class KeyMasterController {
      * @return identity pubkey (64-char hex)
      */
     public String createIdentity(String identity, String pgpName, String pgpEmail) {
+        return createIdentity(identity, pgpName, pgpEmail, Instant.now().getEpochSecond());
+    }
+
+    public String createIdentity(String identity, String pgpName, String pgpEmail,
+                                  long creationTime) {
         KeyVault vault = km.vault;
         int mangledIdentity = Bip32KeyDerivator.mangle(identity);
-        long creationTime = Instant.now().getEpochSecond();
 
         // Build HD paths
         HDPath sshHdPath = HDPath.m(
@@ -132,8 +140,8 @@ public class KeyMasterController {
                     new AlgField(AlgField.ALG_SCHNORR, 0, 0).toIndex() | H,
                     new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex() | H
             };
-            String pubkeyHex = NostrUtil.bytesToHex(
-                    vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, nostrPath).data());
+            byte[] compressed = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, nostrPath).data();
+            String pubkeyHex = NostrUtil.bytesToHex(Arrays.copyOfRange(compressed, 1, 33));
             kvStore.put(new NostrKeyEntry(nostrHdPath, identity, pubkeyHex));
         } else {
             throw new IllegalStateException("No metadata store available for createIdentity");
@@ -148,8 +156,8 @@ public class KeyMasterController {
                 new AlgField(AlgField.ALG_SCHNORR, 0, 0).toIndex() | H,
                 new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex() | H
         };
-        String pubkey = NostrUtil.bytesToHex(
-                vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, nostrPath).data());
+        byte[] compressedPub = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, nostrPath).data();
+        String pubkey = NostrUtil.bytesToHex(Arrays.copyOfRange(compressedPub, 1, 33));
 
         log.info("Identity created: {}", pubkey);
         return pubkey;
@@ -264,7 +272,7 @@ public class KeyMasterController {
         realm.putHandler(Protocol.NOSTR.coinType(), nostrHandler);
         km.realms.put(identity, realm);
 
-        // Create vault-backed Nostr signer
+        // Create vault-backed transport signer (identity key with ECDH)
         int identityIndex = mangledIdentity | H;
         int[] nostrPath = {
                 44 | H,
@@ -274,21 +282,46 @@ public class KeyMasterController {
                 new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex() | H
         };
 
-        NostrIdentitySigner signer = new NostrIdentitySigner() {
+        TransportSigner signer = new TransportSigner() {
             @Override
             public String getPubkey() {
-                return NostrUtil.bytesToHex(
-                        vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, nostrPath).data());
+                byte[] compressed = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, nostrPath).data();
+                return NostrUtil.bytesToHex(Arrays.copyOfRange(compressed, 1, 33));
             }
 
             @Override
             public byte[] sign(byte[] hash) {
                 return vault.execute(KeyVault.FN_SIGN, hash, nostrPath).data();
             }
+
+            @Override
+            public byte[] ecdh(byte[] peerPubKey) {
+                return vault.execute(KeyVault.FN_KEY_AGREEMENT, peerPubKey, nostrPath).data();
+            }
         };
+
+        // Derive deterministic realm key from vault (no private key export)
+        int realmSeq = 0;
+        int mangledRealm = Bip32KeyDerivator.mangle("keymaster:" + realmSeq);
+        int[] realmBasePath = {
+                44 | H,
+                Protocol.NOSTR.coinType() | H,
+                mangledRealm | H,
+                0 | H,
+                0 | H
+        };
+        // Derive xpub at realmBasePath / realmSeq so avatar derives service
+        // channels at 2 levels: protocol_index / seq (matching derive_service_pubkey)
+        int[] realmXpubPath = Arrays.copyOf(realmBasePath, realmBasePath.length + 1);
+        realmXpubPath[realmBasePath.length] = realmSeq;
+        VaultResult realmKey = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, realmXpubPath);
+        String realmXpub = HDKeyDerivation.createMasterPubKeyFromBytes(
+                realmKey.data(), realmKey.chainCode())
+                .serializePubB58(BitcoinNetwork.MAINNET);
 
         // Create connector and connect
         NipxxConnector conn = new NipxxConnector(realm);
+        conn.setRealmVault(vault, realmBasePath, realmSeq, realmXpub);
         if (connectionStateListener != null) {
             conn.setConnectionStateListener(connectionStateListener);
         }

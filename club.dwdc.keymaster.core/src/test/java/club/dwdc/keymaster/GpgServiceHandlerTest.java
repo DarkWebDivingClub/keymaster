@@ -9,6 +9,7 @@ import org.bitcoinj.crypto.ChildNumber;
 import org.bitcoinj.crypto.HDPath;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -155,6 +156,48 @@ class GpgServiceHandlerTest {
 
         assertNotNull(cert.publicCertArmor());
         assertTrue(cert.publicCertArmor().contains("BEGIN PGP PUBLIC KEY BLOCK"));
+    }
+
+    @Test
+    void getPublicCert_multiIdentity_allCertsIncluded() {
+        var vault = new Bip32KeyVault(TEST_MNEMONIC);
+        List<KeyEntry> allKeys = new ArrayList<>();
+        allKeys.addAll(gpgKeysForIdentity("alice@test.com"));
+        allKeys.addAll(gpgKeysForIdentity("bob@test.com"));
+        allKeys.addAll(gpgKeysForIdentity("carol@test.com"));
+        var handler = new GpgServiceHandler(vault, allKeys);
+
+        GpgPublicCert cert = handler.getPublicCert();
+
+        String armor = cert.publicCertArmor();
+        // Count PGP cert blocks — one per identity
+        long certCount = armor.split("BEGIN PGP PUBLIC KEY BLOCK", -1).length - 1;
+        assertEquals(3, certCount, "should contain one cert per identity");
+        // Each cert ends with END marker
+        long endCount = armor.split("END PGP PUBLIC KEY BLOCK", -1).length - 1;
+        assertEquals(3, endCount);
+    }
+
+    @Test
+    void getPublicCert_multiIdentity_eachCertDiffersFromSingleIdentity() {
+        var vault = new Bip32KeyVault(TEST_MNEMONIC);
+        // Single identity cert
+        var singleHandler = new GpgServiceHandler(vault, gpgKeysForIdentity("alice@test.com"));
+        String singleCert = singleHandler.getPublicCert().publicCertArmor();
+
+        // Multi-identity cert
+        List<KeyEntry> allKeys = new ArrayList<>();
+        allKeys.addAll(gpgKeysForIdentity("alice@test.com"));
+        allKeys.addAll(gpgKeysForIdentity("bob@test.com"));
+        var multiHandler = new GpgServiceHandler(vault, allKeys);
+        String multiCert = multiHandler.getPublicCert().publicCertArmor();
+
+        // Multi-identity output must be longer (contains additional cert)
+        assertTrue(multiCert.length() > singleCert.length(),
+                "multi-identity cert should be longer than single-identity");
+        // Single identity cert should be a prefix of the multi-identity output
+        assertTrue(multiCert.startsWith(singleCert),
+                "first cert in multi-identity output should match single-identity cert");
     }
 
     @Test

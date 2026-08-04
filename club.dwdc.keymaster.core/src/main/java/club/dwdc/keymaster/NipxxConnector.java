@@ -1,6 +1,6 @@
 package club.dwdc.keymaster;
 
-import club.dwdc.keyvault.core.Bip32KeyDerivator;
+import club.dwdc.keyvault.core.KeyVault;
 import club.dwdc.keyvault.core.Protocol;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
@@ -11,7 +11,6 @@ import org.slf4j.LoggerFactory;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
-import java.security.SecureRandom;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.function.Consumer;
@@ -20,14 +19,20 @@ import java.util.function.Consumer;
  * NIP-xx transport connector — implements the KeyMaster-Avatar attach/detach
  * handshake over a Nostr relay using NIP-44 encrypted kind-27235 events.
  *
- * <p>Creates its own random realm derivator on each {@link #connect} call.
- * The identity private key never enters this class — signing is delegated
- * to a {@link NostrIdentitySigner} provided by the controller.
+ * <p>Uses a vault-backed realm key for deterministic service channel derivation.
+ * No private key ever enters this class — signing and ECDH are delegated to
+ * a {@link TransportSigner} (identity key) or routed through the vault
+ * (service channel keys).
  */
 public class NipxxConnector implements Connector {
     private static final Logger log = LoggerFactory.getLogger(NipxxConnector.class);
 
     private final Realm realm;
+
+    private KeyVault vault;
+    private int[] realmBasePath;
+    private int realmIndex;
+    private String realmXpub;
 
     private NostrTransport transport;
     private String avatarLoginXpub;
@@ -51,24 +56,33 @@ public class NipxxConnector implements Connector {
         }
     }
 
+    /**
+     * Inject the vault, realm base path, realm index, and pre-computed xpub
+     * for deterministic service channel derivation.
+     * Must be called before {@link #connect}.
+     */
+    public void setRealmVault(KeyVault vault, int[] realmBasePath, int realmIndex,
+                              String realmXpub) {
+        this.vault = vault;
+        this.realmBasePath = realmBasePath;
+        this.realmIndex = realmIndex;
+        this.realmXpub = realmXpub;
+    }
+
     public void setConnectionStateListener(Consumer<NostrTransport.ConnectionState> listener) {
         this.connectionStateListener = listener;
     }
 
     @Override
-    public String connect(AvatarDescriptor avatar, NostrIdentitySigner signer) throws Exception {
-        // Create a fresh random realm derivator for this connection
-        byte[] realmSeed = new byte[64];
-        new SecureRandom().nextBytes(realmSeed);
-        Bip32KeyDerivator realmDerivator = new Bip32KeyDerivator(realmSeed);
+    public String connect(AvatarDescriptor avatar, TransportSigner signer) throws Exception {
+        if (this.vault == null || this.realmBasePath == null) {
+            throw new IllegalStateException(
+                    "realm vault must be set before connect()");
+        }
 
-        int realmIndex = 0;
-        byte[] realmPrivKey = realmDerivator.derive(realmIndex);
-        byte[] realmPubKey = NostrTransport.computeSchnorrPubKey(realmPrivKey);
-        String realmXpub = realmDerivator.deriveXpub(realmIndex);
-
-        this.transport = new NostrTransport(realmPrivKey, realmPubKey);
-        transport.setRealmDerivator(realmDerivator, realmIndex);
+        // Transport uses the identity key directly — stable across reconnects
+        this.transport = new NostrTransport(signer);
+        transport.setRealmVault(this.vault, this.realmBasePath, this.realmIndex);
         transport.setServiceRequestHandler(this::handleServiceRequest);
         if (connectionStateListener != null) {
             transport.setConnectionStateListener(connectionStateListener);
@@ -77,7 +91,7 @@ public class NipxxConnector implements Connector {
 
         this.avatarLoginXpub = avatar.loginXpub();
 
-        // Get identity pubkey and sign the connector hash via the signer
+        // Get identity pubkey and sign the connector hash
         String identityPubkey = signer.getPubkey();
 
         // Build the connector JSON for signing
