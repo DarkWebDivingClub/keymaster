@@ -88,7 +88,9 @@ public class NostrServiceHandler extends AbstractServiceHandler {
             if (!pubResult.isOk()) {
                 continue;
             }
-            result.add(new NostrPublicKey(pubResult.data()));
+            // Vault returns 33-byte compressed; Nostr uses 32-byte x-only
+            byte[] xOnly = Arrays.copyOfRange(pubResult.data(), 1, 33);
+            result.add(new NostrPublicKey(xOnly));
         }
         return result;
     }
@@ -400,7 +402,9 @@ public class NostrServiceHandler extends AbstractServiceHandler {
             if (!pubResult.isOk()) {
                 continue;
             }
-            if (Arrays.equals(pubResult.data(), publicKey)) {
+            // Vault returns 33-byte compressed; compare x-only (strip prefix)
+            byte[] xOnly = Arrays.copyOfRange(pubResult.data(), 1, 33);
+            if (Arrays.equals(xOnly, publicKey)) {
                 return key;
             }
         }

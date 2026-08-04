@@ -1,12 +1,15 @@
 package club.dwdc.keymaster;
 
 import club.dwdc.keyvault.core.Bip32KeyDerivator;
+import club.dwdc.keyvault.core.KeyVault;
+import club.dwdc.keyvault.core.VaultResult;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import nostr.crypto.nip44.EncryptedPayloads;
 import nostr.crypto.schnorr.Schnorr;
 import nostr.encryption.MessageCipher44;
 import nostr.util.NostrUtil;
@@ -20,6 +23,8 @@ import org.bouncycastle.math.ec.ECPoint;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -54,15 +59,15 @@ public class NostrTransport {
         }
     }
 
-    private final byte[] privKey;
-    private final byte[] pubKey;
+    private final TransportSigner signer;
     private final String pubKeyHex;
 
     private NostrRelayClient relayClient;
     private String attachEventId;
 
-    /** Realm BIP-32 derivator and index for deriving service channel keys. */
-    private Bip32KeyDerivator realmDerivator;
+    /** Vault and realm base path for deriving service channel keys. */
+    private KeyVault vault;
+    private int[] realmBasePath;
     private int realmIndex;
 
     private final ConcurrentHashMap<String, CompletableFuture<JsonObject>> pendingResponses =
@@ -90,15 +95,15 @@ public class NostrTransport {
      */
     static class ServiceChannelInfo {
         final String serviceType;
-        final byte[] kmServicePrivKey;
+        final int[] vaultPath;
         final byte[] kmServicePubKey;
         final String kmServicePubKeyHex;
         final String avatarServicePubKeyHex;
 
-        ServiceChannelInfo(String serviceType, byte[] privKey, byte[] pubKey,
+        ServiceChannelInfo(String serviceType, int[] vaultPath, byte[] pubKey,
                            String avatarServicePubKeyHex) {
             this.serviceType = serviceType;
-            this.kmServicePrivKey = privKey;
+            this.vaultPath = vaultPath;
             this.kmServicePubKey = pubKey;
             this.kmServicePubKeyHex = NostrUtil.bytesToHex(pubKey);
             this.avatarServicePubKeyHex = avatarServicePubKeyHex;
@@ -106,13 +111,11 @@ public class NostrTransport {
     }
 
     /**
-     * @param privKey 32-byte Schnorr private key
-     * @param pubKey  32-byte Schnorr public key
+     * @param signer vault-backed transport signer for pubkey, signing, and ECDH
      */
-    public NostrTransport(byte[] privKey, byte[] pubKey) {
-        this.privKey = privKey;
-        this.pubKey = pubKey;
-        this.pubKeyHex = NostrUtil.bytesToHex(pubKey);
+    public NostrTransport(TransportSigner signer) {
+        this.signer = signer;
+        this.pubKeyHex = signer.getPubkey();
     }
 
     public String getPubKeyHex() {
@@ -134,10 +137,12 @@ public class NostrTransport {
     }
 
     /**
-     * Set the realm derivator for deterministic service channel derivation.
+     * Set the vault and realm base path for deterministic service channel derivation.
+     * Service channel keys are derived at: realmBasePath / realmIndex / protocolIdx / seq
      */
-    public void setRealmDerivator(Bip32KeyDerivator derivator, int realmIndex) {
-        this.realmDerivator = derivator;
+    public void setRealmVault(KeyVault vault, int[] realmBasePath, int realmIndex) {
+        this.vault = vault;
+        this.realmBasePath = realmBasePath;
         this.realmIndex = realmIndex;
     }
 
@@ -245,8 +250,8 @@ public class NostrTransport {
      * Both sides compute the same channel pubkeys independently.
      */
     private void deriveServiceChannels(String avatarLoginXpub, List<String> services) {
-        if (realmDerivator == null) {
-            log.warn("No realm derivator set — cannot derive service channels");
+        if (vault == null || realmBasePath == null) {
+            log.warn("No realm vault/path set — cannot derive service channels");
             return;
         }
         if (services == null) return;
@@ -256,9 +261,19 @@ public class NostrTransport {
                 int protocolIdx = Bip32KeyDerivator.mangle(serviceType);
                 int seq = 0;
 
-                // Derive our (KM) service channel private key
-                byte[] kmSvcPrivKey = realmDerivator.derive(realmIndex, protocolIdx, seq);
-                byte[] kmSvcPubKey = computeSchnorrPubKey(kmSvcPrivKey);
+                // Build extended vault path: realmBasePath / realmIndex / protocolIdx / seq
+                int[] svcPath = extendPath(realmBasePath, realmIndex, protocolIdx, seq);
+
+                // Derive our (KM) service channel public key from vault
+                VaultResult pubResult = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, svcPath);
+                if (!pubResult.isOk()) {
+                    log.error("Failed to derive service pubkey for {}: status {}",
+                            serviceType, pubResult.status());
+                    continue;
+                }
+                // Compressed (33 bytes) → x-only (32 bytes)
+                byte[] compressed = pubResult.data();
+                byte[] kmSvcPubKey = java.util.Arrays.copyOfRange(compressed, 1, 33);
                 String kmSvcPubKeyHex = NostrUtil.bytesToHex(kmSvcPubKey);
 
                 // Derive avatar's service channel pubkey from their login xpub
@@ -266,7 +281,7 @@ public class NostrTransport {
                         avatarLoginXpub, protocolIdx, seq);
 
                 ServiceChannelInfo channel = new ServiceChannelInfo(
-                        serviceType, kmSvcPrivKey, kmSvcPubKey, avatarSvcPubKeyHex);
+                        serviceType, svcPath, kmSvcPubKey, avatarSvcPubKeyHex);
                 serviceChannels.put(avatarSvcPubKeyHex, channel);
 
                 // Subscribe to events addressed to our service pubkey
@@ -284,6 +299,16 @@ public class NostrTransport {
                 log.error("Error deriving service channel for {}: {}", serviceType, e.getMessage(), e);
             }
         }
+    }
+
+    /**
+     * Extend a base path with additional non-hardened child indices.
+     */
+    private static int[] extendPath(int[] basePath, int... children) {
+        int[] result = new int[basePath.length + children.length];
+        System.arraycopy(basePath, 0, result, 0, basePath.length);
+        System.arraycopy(children, 0, result, basePath.length, children.length);
+        return result;
     }
 
     /**
@@ -352,7 +377,7 @@ public class NostrTransport {
         request.add("params", paramsArr);
 
         String plaintext = GSON.toJson(request);
-        String encrypted = encrypt(plaintext, privKey, NostrUtil.hexToBytes(recipientPubKeyHex));
+        String encrypted = encryptViaSigner(plaintext, NostrUtil.hexToBytes(recipientPubKeyHex));
 
         long createdAt = System.currentTimeMillis() / 1000;
         JsonArray tags = new JsonArray();
@@ -371,7 +396,7 @@ public class NostrTransport {
         }
 
         String eventId = computeEventId(pubKeyHex, createdAt, PROTOCOL_KIND, tags, encrypted);
-        String sig = signEvent(eventId, privKey);
+        String sig = NostrUtil.bytesToHex(signer.sign(NostrUtil.hexToBytes(eventId)));
 
         JsonObject event = new JsonObject();
         event.addProperty("id", eventId);
@@ -433,13 +458,13 @@ public class NostrTransport {
             ServiceChannelInfo matchedChannel = null;
 
             try {
-                plaintext = decrypt(content, privKey, NostrUtil.hexToBytes(senderPubKey));
+                plaintext = decryptViaSigner(content, NostrUtil.hexToBytes(senderPubKey));
             } catch (Exception e) {
-                // Try service channel keys
+                // Try service channel keys via vault ECDH
                 for (ServiceChannelInfo channel : serviceChannels.values()) {
                     try {
-                        plaintext = decrypt(content, channel.kmServicePrivKey,
-                                NostrUtil.hexToBytes(senderPubKey));
+                        plaintext = decryptViaVault(content,
+                                NostrUtil.hexToBytes(senderPubKey), channel.vaultPath);
                         matchedChannel = channel;
                         break;
                     } catch (Exception e2) {
@@ -539,7 +564,7 @@ public class NostrTransport {
 
         String replyToEventId = event.get("id").getAsString();
         sendResponseEvent(replyToEventId, channel.avatarServicePubKeyHex, rpcResponse,
-                channel.kmServicePrivKey, channel.kmServicePubKeyHex);
+                channel.vaultPath, channel.kmServicePubKeyHex);
     }
 
     // ==================== Response handling ====================
@@ -565,12 +590,12 @@ public class NostrTransport {
     // ==================== Event sending ====================
 
     private void sendResponseEvent(String replyToEventId, String recipientPubKeyHex,
-                                   JsonObject response, byte[] signingPrivKey,
+                                   JsonObject response, int[] vaultPath,
                                    String signingPubKeyHex) {
         try {
             String plaintext = GSON.toJson(response);
-            String encrypted = encrypt(plaintext, signingPrivKey,
-                    NostrUtil.hexToBytes(recipientPubKeyHex));
+            String encrypted = encryptViaVault(plaintext,
+                    NostrUtil.hexToBytes(recipientPubKeyHex), vaultPath);
 
             long createdAt = System.currentTimeMillis() / 1000;
             JsonArray tags = new JsonArray();
@@ -599,7 +624,7 @@ public class NostrTransport {
 
             String eventId = computeEventId(signingPubKeyHex, createdAt, PROTOCOL_KIND,
                     tags, encrypted);
-            String sig = signEvent(eventId, signingPrivKey);
+            String sig = signViaVault(eventId, vaultPath);
 
             JsonObject event = new JsonObject();
             event.addProperty("id", eventId);
@@ -620,12 +645,87 @@ public class NostrTransport {
 
     // ==================== Crypto helpers ====================
 
+    /**
+     * Encrypt using the transport signer's ECDH key agreement (vault-backed).
+     */
+    private String encryptViaSigner(String plaintext, byte[] recipientPubKey) throws Exception {
+        byte[] sharedX = signer.ecdh(recipientPubKey);
+        byte[] convKey = deriveNip44ConversationKey(sharedX);
+        byte[] nonce = NostrUtil.createRandomByteArray(32);
+        return EncryptedPayloads.encrypt(plaintext, convKey, nonce);
+    }
+
+    /**
+     * Decrypt using the transport signer's ECDH key agreement (vault-backed).
+     */
+    private String decryptViaSigner(String ciphertext, byte[] senderPubKey) throws Exception {
+        byte[] sharedX = signer.ecdh(senderPubKey);
+        byte[] convKey = deriveNip44ConversationKey(sharedX);
+        return EncryptedPayloads.decrypt(ciphertext, convKey);
+    }
+
+    /**
+     * NIP-44 conversation key: HKDF-Extract with salt "nip44-v2" over the
+     * raw ECDH shared x-coordinate.
+     */
+    static byte[] deriveNip44ConversationKey(byte[] sharedX) {
+        try {
+            byte[] salt = "nip44-v2".getBytes(StandardCharsets.UTF_8);
+            Mac mac = Mac.getInstance("HmacSHA256");
+            mac.init(new SecretKeySpec(salt, "HmacSHA256"));
+            return mac.doFinal(sharedX);
+        } catch (Exception e) {
+            throw new IllegalStateException("NIP-44 conversation key derivation failed", e);
+        }
+    }
+
+    /**
+     * Encrypt using vault-backed ECDH key agreement (service channel keys).
+     */
+    private String encryptViaVault(String plaintext, byte[] recipientPubKey, int[] vaultPath)
+            throws Exception {
+        VaultResult ecdhResult = vault.execute(KeyVault.FN_KEY_AGREEMENT, recipientPubKey, vaultPath);
+        if (!ecdhResult.isOk()) {
+            throw new RuntimeException("Vault ECDH failed: status " + ecdhResult.status());
+        }
+        byte[] convKey = deriveNip44ConversationKey(ecdhResult.data());
+        byte[] nonce = NostrUtil.createRandomByteArray(32);
+        return EncryptedPayloads.encrypt(plaintext, convKey, nonce);
+    }
+
+    /**
+     * Decrypt using vault-backed ECDH key agreement (service channel keys).
+     */
+    private String decryptViaVault(String ciphertext, byte[] senderPubKey, int[] vaultPath)
+            throws Exception {
+        VaultResult ecdhResult = vault.execute(KeyVault.FN_KEY_AGREEMENT, senderPubKey, vaultPath);
+        if (!ecdhResult.isOk()) {
+            throw new RuntimeException("Vault ECDH failed: status " + ecdhResult.status());
+        }
+        byte[] convKey = deriveNip44ConversationKey(ecdhResult.data());
+        return EncryptedPayloads.decrypt(ciphertext, convKey);
+    }
+
+    /**
+     * Sign an event using vault-backed Schnorr signing (service channel keys).
+     */
+    private String signViaVault(String eventIdHex, int[] vaultPath) throws Exception {
+        byte[] eventIdBytes = NostrUtil.hexToBytes(eventIdHex);
+        VaultResult sigResult = vault.execute(KeyVault.FN_SIGN, eventIdBytes, vaultPath);
+        if (!sigResult.isOk()) {
+            throw new RuntimeException("Vault sign failed: status " + sigResult.status());
+        }
+        return NostrUtil.bytesToHex(sigResult.data());
+    }
+
+    /** Encrypt with raw private key — used for service channel crypto. */
     static String encrypt(String plaintext, byte[] senderPrivKey, byte[] recipientPubKey)
             throws Exception {
         MessageCipher44 cipher = new MessageCipher44(senderPrivKey, recipientPubKey);
         return cipher.encrypt(plaintext);
     }
 
+    /** Decrypt with raw private key — used for service channel crypto. */
     static String decrypt(String ciphertext, byte[] recipientPrivKey, byte[] senderPubKey)
             throws Exception {
         MessageCipher44 cipher = new MessageCipher44(recipientPrivKey, senderPubKey);

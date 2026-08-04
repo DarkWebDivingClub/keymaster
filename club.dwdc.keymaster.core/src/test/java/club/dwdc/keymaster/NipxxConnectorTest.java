@@ -4,10 +4,14 @@ import club.dwdc.keyvault.core.AlgField;
 import club.dwdc.keyvault.core.Bip32KeyDerivator;
 import club.dwdc.keyvault.core.Bip32KeyVault;
 import club.dwdc.keyvault.core.ConfigField;
+import club.dwdc.keyvault.core.KeyVault;
 import club.dwdc.keyvault.core.Protocol;
+import club.dwdc.keyvault.core.VaultResult;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import org.bitcoinj.base.BitcoinNetwork;
 import org.bitcoinj.crypto.ChildNumber;
+import org.bitcoinj.crypto.HDKeyDerivation;
 import org.bitcoinj.crypto.HDPath;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -148,5 +152,47 @@ class NipxxConnectorTest {
         assertEquals(Protocol.SSH.coinType(), NipxxConnector.serviceTypeToCoinType("ssh"));
         assertEquals(Protocol.OPENPGP.coinType(), NipxxConnector.serviceTypeToCoinType("gpg"));
         assertNull(NipxxConnector.serviceTypeToCoinType("unknown"));
+    }
+
+    @Test
+    void realmXpub_isDeterministicFromVault() {
+        var vault = new Bip32KeyVault(TEST_MNEMONIC);
+        int H = 0x80000000;
+        int mangledRealm = Bip32KeyDerivator.mangle("keymaster:0");
+        int[] realmBasePath = {
+                44 | H,
+                Protocol.NOSTR.coinType() | H,
+                mangledRealm | H,
+                0 | H,
+                0 | H
+        };
+
+        // Xpub path includes realmSeq (non-hardened) so avatar derives
+        // service channels at 2 levels: protocol_index / seq
+        int realmSeq = 0;
+        int[] realmXpubPath = java.util.Arrays.copyOf(realmBasePath, realmBasePath.length + 1);
+        realmXpubPath[realmBasePath.length] = realmSeq;
+
+        // First derivation: FN_GET_PUBLIC_KEY → compressed key + chainCode → xpub
+        VaultResult r1 = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, realmXpubPath);
+        assertTrue(r1.isOk());
+        assertNotNull(r1.chainCode());
+        String xpub1 = HDKeyDerivation.createMasterPubKeyFromBytes(
+                r1.data(), r1.chainCode())
+                .serializePubB58(BitcoinNetwork.MAINNET);
+
+        // Second derivation from a fresh vault with same mnemonic
+        var vault2 = new Bip32KeyVault(TEST_MNEMONIC);
+        VaultResult r2 = vault2.execute(KeyVault.FN_GET_PUBLIC_KEY, null, realmXpubPath);
+        String xpub2 = HDKeyDerivation.createMasterPubKeyFromBytes(
+                r2.data(), r2.chainCode())
+                .serializePubB58(BitcoinNetwork.MAINNET);
+
+        assertEquals(xpub1, xpub2, "realm xpub must be deterministic across vault instances");
+    }
+
+    @Test
+    void mangle_keymaster0_goldenValue() {
+        assertEquals(0x404a4890, Bip32KeyDerivator.mangle("keymaster:0"));
     }
 }

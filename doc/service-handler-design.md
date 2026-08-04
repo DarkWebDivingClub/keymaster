@@ -198,7 +198,7 @@ sequenceDiagram
     C->>R: WebSocket connect
     R-->>C: connected
 
-    Note over C: Derive realm keypair from seed
+    Note over C: Derive realm xpub from vault (FN_GET_PUBLIC_KEY + chainCode)
     C->>R: kind 27235 attach request
     R-->>C: kind 27235 attach response (avatar xpub)
 

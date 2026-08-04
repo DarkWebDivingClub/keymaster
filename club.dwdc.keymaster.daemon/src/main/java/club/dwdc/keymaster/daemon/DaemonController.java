@@ -75,7 +75,13 @@ public class DaemonController implements DaemonServer.RequestHandler {
         var keyStore = new FileKeyMetaDataStore(configDir);
         KeyMaster km = new KeyMaster(vault, keyStore);
         KeyMasterController ctrl = new KeyMasterController(km);
-        String pubkey = ctrl.createIdentity(identity, pgpName, pgpEmail);
+        String pubkey;
+        if (params.has("creation_time")) {
+            long creationTime = params.get("creation_time").getAsLong();
+            pubkey = ctrl.createIdentity(identity, pgpName, pgpEmail, creationTime);
+        } else {
+            pubkey = ctrl.createIdentity(identity, pgpName, pgpEmail);
+        }
         identityStore.add(identity, pubkey);
 
         JsonObject result = new JsonObject();
