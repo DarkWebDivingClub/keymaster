@@ -89,14 +89,18 @@ public class GpgServiceHandler extends AbstractServiceHandler {
             throw new IllegalStateException("no GPG keys available");
         }
         try {
-            String pgpName = keys.get(0).metadata().get("pgp_name");
-            String pgpEmail = keys.get(0).metadata().get("pgp_email");
-            long epochSec = Long.parseLong(keys.get(0).metadata().get("creation_time"));
-            Instant creationTime = Instant.ofEpochSecond(epochSec);
-            KeyEntry certKey = keys.get(0);
-            KeyEntry signKey = keys.get(1);
-            return new GpgPublicCert(OpenPgpCertBuilder.buildPublicCert(
-                    vault, certKey, signKey, pgpName, pgpEmail, creationTime));
+            StringBuilder allCerts = new StringBuilder();
+            for (int i = 0; i + 1 < keys.size(); i += 2) {
+                KeyEntry certKey = keys.get(i);
+                KeyEntry signKey = keys.get(i + 1);
+                String pgpName = certKey.metadata().get("pgp_name");
+                String pgpEmail = certKey.metadata().get("pgp_email");
+                long epochSec = Long.parseLong(certKey.metadata().get("creation_time"));
+                Instant creationTime = Instant.ofEpochSecond(epochSec);
+                allCerts.append(OpenPgpCertBuilder.buildPublicCert(
+                        vault, certKey, signKey, pgpName, pgpEmail, creationTime));
+            }
+            return new GpgPublicCert(allCerts.toString());
         } catch (Exception e) {
             throw new IllegalStateException("Failed to generate GPG cert", e);
         }
