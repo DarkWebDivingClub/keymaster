@@ -12,27 +12,19 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Simple Nostr relay WebSocket client using OkHttp.
+ * WebSocket-based relay client using OkHttp.
  */
-public class NostrRelayClient {
+public class NostrRelayClient implements RelayClient {
     private static final Logger log = LoggerFactory.getLogger(NostrRelayClient.class);
 
     private final String url;
-    private final Listener listener;
+    private Listener listener;
     private final OkHttpClient httpClient;
     private WebSocket webSocket;
     private final CountDownLatch connectLatch = new CountDownLatch(1);
 
-    public interface Listener {
-        void onConnected();
-        void onMessage(String text);
-        void onError(String error);
-        void onClosed();
-    }
-
-    public NostrRelayClient(String url, Listener listener) {
+    public NostrRelayClient(String url) {
         this.url = url;
-        this.listener = listener;
         this.httpClient = new OkHttpClient.Builder()
                 .readTimeout(30, TimeUnit.SECONDS)
                 .writeTimeout(10, TimeUnit.SECONDS)
@@ -40,7 +32,17 @@ public class NostrRelayClient {
                 .build();
     }
 
+    @Override
+    public void setListener(Listener listener) {
+        this.listener = listener;
+    }
+
+    @Override
     public void connect() throws InterruptedException {
+        if (listener == null) {
+            throw new IllegalStateException("listener must be set before connect()");
+        }
+
         Request request = new Request.Builder()
                 .url(url)
                 .build();
@@ -78,6 +80,7 @@ public class NostrRelayClient {
         }
     }
 
+    @Override
     public void send(String message) {
         log.debug("Sending: {}", message);
         if (webSocket != null) {
@@ -85,6 +88,7 @@ public class NostrRelayClient {
         }
     }
 
+    @Override
     public void close() {
         if (webSocket != null) {
             webSocket.close(1000, "bye");

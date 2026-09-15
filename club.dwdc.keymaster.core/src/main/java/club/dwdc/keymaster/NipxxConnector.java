@@ -87,7 +87,8 @@ public class NipxxConnector implements Connector {
         if (connectionStateListener != null) {
             transport.setConnectionStateListener(connectionStateListener);
         }
-        transport.connect(avatar.relay());
+        RelayClient relayClient = new NostrRelayClient(avatar.relay());
+        transport.connect(relayClient);
 
         this.avatarLoginXpub = avatar.loginXpub();
 

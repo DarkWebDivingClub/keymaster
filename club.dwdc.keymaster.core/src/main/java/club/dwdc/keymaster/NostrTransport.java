@@ -62,7 +62,7 @@ public class NostrTransport {
     private final TransportSigner signer;
     private final String pubKeyHex;
 
-    private NostrRelayClient relayClient;
+    private RelayClient relayClient;
     private String attachEventId;
 
     /** Vault and realm base path for deriving service channel keys. */
@@ -147,13 +147,14 @@ public class NostrTransport {
     }
 
     /**
-     * Connect to the Nostr relay and subscribe to events addressed to our pubkey.
+     * Connect using the given relay client and subscribe to events addressed to our pubkey.
      */
-    public void connect(String relayUrl) throws InterruptedException {
-        this.relayClient = new NostrRelayClient(relayUrl, new NostrRelayClient.Listener() {
+    public void connect(RelayClient client) throws Exception {
+        this.relayClient = client;
+        client.setListener(new RelayClient.Listener() {
             @Override
             public void onConnected() {
-                log.info("Connected to relay: {}", relayUrl);
+                log.info("Connected to relay");
                 fireConnectionState(ConnectionState.CONNECTED);
             }
 
@@ -175,7 +176,7 @@ public class NostrTransport {
             }
         });
 
-        relayClient.connect();
+        client.connect();
         Thread.sleep(500);
 
         String subId = "km-" + System.currentTimeMillis();
