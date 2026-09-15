@@ -20,6 +20,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
@@ -39,6 +40,7 @@ public class KeyMasterController {
     private ApprovalHandler approvalHandler;
     private String currentIdentity;
     private Consumer<NostrTransport.ConnectionState> connectionStateListener;
+    private Function<AvatarDescriptor, RelayClient> relayClientFactory;
 
     /**
      * Create a controller wrapping a KeyMaster.
@@ -325,6 +327,9 @@ public class KeyMasterController {
         if (connectionStateListener != null) {
             conn.setConnectionStateListener(connectionStateListener);
         }
+        if (relayClientFactory != null) {
+            conn.setRelayClientFactory(relayClientFactory);
+        }
         String attachId = conn.connect(avatar, signer);
         km.connectors.put(identity, conn);
         return attachId;
@@ -355,6 +360,15 @@ public class KeyMasterController {
      */
     public void setConnectionStateListener(Consumer<NostrTransport.ConnectionState> listener) {
         this.connectionStateListener = listener;
+    }
+
+    /**
+     * Set a factory for creating relay clients. When set, the connector uses it
+     * instead of defaulting to {@link NostrRelayClient}. This allows the Android
+     * layer to inject an {@code RfcommRelayClient} when the descriptor has a BT address.
+     */
+    public void setRelayClientFactory(Function<AvatarDescriptor, RelayClient> factory) {
+        this.relayClientFactory = factory;
     }
 
     /**
