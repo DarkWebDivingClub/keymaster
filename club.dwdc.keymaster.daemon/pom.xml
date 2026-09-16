@@ -10,7 +10,7 @@
     </parent>
 
     <artifactId>club.dwdc.keymaster.daemon</artifactId>
-    <name>club.dwdc.keymaster.daemon</name>
+    <name>keymaster-daemon</name>
     <description>KeyMaster daemon — Unix domain socket server with JSON-RPC for key management.</description>
 
     <dependencies>

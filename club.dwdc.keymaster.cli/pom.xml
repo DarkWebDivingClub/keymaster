@@ -10,7 +10,7 @@
     </parent>
 
     <artifactId>club.dwdc.keymaster.cli</artifactId>
-    <name>club.dwdc.keymaster.cli</name>
+    <name>keymaster-cli</name>
     <description>KeyMaster CLI — thin client that sends JSON-RPC commands to km-daemon.</description>
 
     <dependencies>

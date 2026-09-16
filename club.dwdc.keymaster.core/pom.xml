@@ -11,7 +11,7 @@
 
     <artifactId>club.dwdc.keymaster.core</artifactId>
 
-    <name>club.dwdc.keymaster.core</name>
+    <name>keymaster-core</name>
     <description>DWDC KeyMaster — controller and security authority for the DWDC Key System.</description>
 
     <dependencies>

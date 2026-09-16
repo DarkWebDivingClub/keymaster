@@ -10,7 +10,7 @@
     </parent>
 
     <artifactId>club.dwdc.keymaster.desktop</artifactId>
-    <name>club.dwdc.keymaster.desktop</name>
+    <name>keymaster-desktop</name>
     <description>Desktop integration — identity storage, policy config, approval handlers.</description>
 
     <dependencies>

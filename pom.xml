@@ -8,7 +8,7 @@
     <version>0.6.0</version>
     <packaging>pom</packaging>
 
-    <name>club.dwdc.keymaster</name>
+    <name>keymaster</name>
     <description>DWDC KeyMaster — parent POM for the multi-module build.</description>
 
     <licenses>
