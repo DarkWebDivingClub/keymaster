@@ -14,6 +14,7 @@ import java.security.MessageDigest;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.function.Consumer;
+import java.util.function.Function;
 
 /**
  * NIP-xx transport connector — implements the KeyMaster-Avatar attach/detach
@@ -38,6 +39,8 @@ public class NipxxConnector implements Connector {
     private String avatarLoginXpub;
     private final Map<String, ServiceChannel> channels = new HashMap<>();
     private Consumer<NostrTransport.ConnectionState> connectionStateListener;
+    private Function<AvatarDescriptor, RelayClient> relayClientFactory =
+            desc -> new NostrRelayClient(desc.relay());
 
     /**
      * @param realm realm containing active service handlers
@@ -73,6 +76,10 @@ public class NipxxConnector implements Connector {
         this.connectionStateListener = listener;
     }
 
+    public void setRelayClientFactory(Function<AvatarDescriptor, RelayClient> factory) {
+        this.relayClientFactory = factory;
+    }
+
     @Override
     public String connect(AvatarDescriptor avatar, TransportSigner signer) throws Exception {
         if (this.vault == null || this.realmBasePath == null) {
@@ -87,7 +94,8 @@ public class NipxxConnector implements Connector {
         if (connectionStateListener != null) {
             transport.setConnectionStateListener(connectionStateListener);
         }
-        transport.connect(avatar.relay());
+        RelayClient relayClient = relayClientFactory.apply(avatar);
+        transport.connect(relayClient);
 
         this.avatarLoginXpub = avatar.loginXpub();
 
