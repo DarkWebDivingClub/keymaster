@@ -80,10 +80,11 @@ public class DaemonController implements DaemonServer.RequestHandler {
             return error("No seed found. Run 'kv-cli seed generate' first.");
         }
 
-        KeyVault vault = new Bip32KeyVault(seedStore.getMnemonic(), seedStore.getPassphrase());
-        var keyStore = new FileKeyMetaDataStore(configDir);
-        KeyMaster km = new KeyMaster(vault, keyStore);
-        KeyMasterController ctrl = new KeyMasterController(km);
+        // The daemon's own controller, so the key metadata store that realms
+        // resolve against is the same instance this write goes through.
+        // FileKeyMetaDataStore loads its keys at construction, so a second
+        // instance would leave the controller's view stale.
+        KeyMasterController ctrl = controller(null);
         String pubkey;
         if (params.has("creation_time")) {
             long creationTime = params.get("creation_time").getAsLong();

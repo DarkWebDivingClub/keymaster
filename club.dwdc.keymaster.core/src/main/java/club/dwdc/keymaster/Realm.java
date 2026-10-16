@@ -323,8 +323,8 @@ public class Realm {
      * Add a connector to this realm: resolve its connection key path from
      * {@code (realm id, avatar login xpub)}, connect, and return its id.
      *
-     * <p>Path: {@code m/KM_PURPOSE'/KM_SCHEME'/id'/mangle(loginXpub)'}, all four
-     * levels hardened. The avatar derives service channels below the exported
+     * <p>Path: {@code m/KM_PURPOSE'/KM_SCHEME'/id'/alg'/mangle(loginXpub)'}, all
+     * five levels hardened. The avatar derives service channels below the exported
      * xpub at {@code protocol_index/seq}, so nothing above it is visible to it.
      * This is the one path that cannot be resolved in the constructor, since it
      * depends on the avatar; it is resolved once here and stored by the connector.
@@ -377,15 +377,23 @@ public class Realm {
 
     /**
      * The connection key path for one avatar link:
-     * {@code m/mangle("keymaster")'/scheme'/realmId'/mangle(login_xpub)'}.
-     * All four levels hardened; nothing above the exported xpub is visible to
-     * the avatar. See {@code doc/key-derivation.md}.
+     * {@code m/mangle("keymaster")'/scheme'/realmId'/alg'/mangle(login_xpub)'}.
+     *
+     * <p>All five levels hardened; nothing above the exported xpub is visible
+     * to the avatar. See {@code doc/key-derivation.md}.
+     *
+     * <p>The algorithm level is not decoration: {@link KeyVault#execute}
+     * rejects paths shorter than five levels and reads the algorithm from level
+     * 4, so every path handed to the vault must declare it there. These are
+     * Schnorr keys — Schnorr signatures for channel events, secp256k1 ECDH for
+     * NIP-44 — hence {@link AlgField#ALG_SCHNORR}.
      */
     static int[] connectorPath(int realmId, String avatarLoginXpub) {
         return new int[]{
                 KM_PURPOSE | H,
                 KM_SCHEME | H,
                 realmId | H,
+                new AlgField(AlgField.ALG_SCHNORR, 0, 0).toIndex() | H,
                 Bip32KeyDerivator.mangle(avatarLoginXpub) | H
         };
     }

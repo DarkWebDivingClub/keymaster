@@ -25,7 +25,7 @@ class KeyMasterControllerTest {
         var ctrl = new KeyMasterController(km);
         ctrl.createIdentity("alice@atlanta.com", "Alice", "alice@atlanta.com");
 
-        assertNull(km.realms.get("alice@atlanta.com"));
+        assertTrue(km.realms.isEmpty(), "createIdentity builds no realm");
     }
 
     @Test
@@ -124,5 +124,96 @@ class KeyMasterControllerTest {
                 List.of("ssh"));
         assertThrows(IllegalStateException.class,
                 () -> ctrl.attach(descriptor, "alice@atlanta.com"));
+    }
+
+    // ── realm lifecycle ───────────────────────────────────────────────────
+
+    @Test
+    void createRealm_defaultsNameToLocalPart_withSuffixOnCollision() {
+        var store = new InMemoryKeyMetaDataStore();
+        var km = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC), store);
+        var ctrl = new KeyMasterController(km);
+        ctrl.createIdentity("alice@atlanta.com", "Alice", "alice@atlanta.com");
+        var alice = new Identity("alice@atlanta.com");
+
+        assertEquals("alice", ctrl.createRealm(null, alice).name());
+        assertEquals("alice-2", ctrl.createRealm("", alice).name());
+        assertEquals("alice-3", ctrl.createRealm("   ", alice).name());
+        assertEquals("myFirstRealm", ctrl.createRealm("myFirstRealm", alice).name(),
+                "a name the user typed is used as given");
+    }
+
+    @Test
+    void createRealm_idsAreRandomAndDistinct() {
+        var store = new InMemoryKeyMetaDataStore();
+        var km = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC), store);
+        var ctrl = new KeyMasterController(km);
+        ctrl.createIdentity("alice@atlanta.com", "Alice", "alice@atlanta.com");
+        var alice = new Identity("alice@atlanta.com");
+
+        var ids = new java.util.HashSet<Integer>();
+        for (int i = 0; i < 50; i++) {
+            int id = ctrl.createRealm("realm-" + i, alice).id();
+            assertTrue(id >= 0, "31 bits, never negative: " + id);
+            assertTrue(ids.add(id), "a duplicate draw must be redrawn, not accepted");
+        }
+        assertEquals(50, km.realms.size());
+
+        // Not a timestamp: consecutive draws are not monotonic
+        var sequence = km.realms.keySet().stream().toList();
+        assertTrue(sequence.size() > 2);
+    }
+
+    @Test
+    void realms_areKeyedByIdSoTwoRealmsCanShareAnIdentity() {
+        var store = new InMemoryKeyMetaDataStore();
+        var km = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC), store);
+        var ctrl = new KeyMasterController(km);
+        ctrl.createIdentity("alice@atlanta.com", "Alice", "alice@atlanta.com");
+        var alice = new Identity("alice@atlanta.com");
+
+        Realm work = ctrl.createRealm("work", alice);
+        Realm home = ctrl.createRealm("home", alice);
+
+        assertNotSame(work, home);
+        assertEquals(2, ctrl.realms().size(),
+                "an identity-keyed map could not hold both");
+        assertNotSame(work.getHandler(Protocol.SSH.coinType()),
+                home.getHandler(Protocol.SSH.coinType()),
+                "realms share no handler instance, which is why policy can differ");
+    }
+
+    @Test
+    void detachRealm_removesTheRealm() {
+        var store = new InMemoryKeyMetaDataStore();
+        var km = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC), store);
+        var ctrl = new KeyMasterController(km);
+        ctrl.createIdentity("alice@atlanta.com", "Alice", "alice@atlanta.com");
+
+        Realm realm = ctrl.createRealm("work", new Identity("alice@atlanta.com"));
+        assertFalse(realm.hasConnectors());
+
+        ctrl.detachRealm(realm.id());
+        assertTrue(ctrl.realms().isEmpty());
+        assertNull(ctrl.getRealm(realm.id()));
+    }
+
+    @Test
+    void detach_unknownRealm_isANoOp() {
+        var km = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC), new InMemoryKeyMetaDataStore());
+        var ctrl = new KeyMasterController(km);
+
+        assertDoesNotThrow(() -> ctrl.detach(4242, 1));
+        assertDoesNotThrow(() -> ctrl.detachRealm(4242));
+        assertDoesNotThrow(() -> ctrl.detach());
+    }
+
+    @Test
+    void attachToRealm_unknownRealm_throws() {
+        var km = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC), new InMemoryKeyMetaDataStore());
+        var ctrl = new KeyMasterController(km);
+
+        assertThrows(IllegalArgumentException.class,
+                () -> ctrl.attachToRealm(4242, null));
     }
 }

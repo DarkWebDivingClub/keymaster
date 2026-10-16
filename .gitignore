@@ -2,3 +2,6 @@ target/
 .idea/
 *.iml
 *.log
+
+# Shade plugin output
+dependency-reduced-pom.xml

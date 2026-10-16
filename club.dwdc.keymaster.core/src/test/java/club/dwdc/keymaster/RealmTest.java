@@ -364,18 +364,27 @@ class RealmTest {
         String loginXpub = "xpub6CUGRUonZSQ4TWtTMmzXdrXDtyPWKiKbbqnWxx2qaGvxZ2x";
         int[] path = Realm.connectorPath(1234, loginXpub);
 
-        assertEquals(4, path.length, "purpose / scheme / realm / connector");
+        assertEquals(5, path.length, "purpose / scheme / realm / alg / connector");
         for (int level : path) {
             assertTrue((level & 0x80000000) != 0, "every KM-side level is hardened");
         }
         assertEquals(1405226288, path[0] & 0x7FFFFFFF, "mangle(\"keymaster\") as BIP-43 purpose");
         assertEquals(1, path[1] & 0x7FFFFFFF, "scheme version");
         assertEquals(1234, path[2] & 0x7FFFFFFF, "realm id");
-        assertEquals(Bip32KeyDerivator.mangle(loginXpub), path[3] & 0x7FFFFFFF,
+        assertEquals(new AlgField(AlgField.ALG_SCHNORR, 0, 0).toIndex(), path[3] & 0x7FFFFFFF,
+                "the vault reads the algorithm from level 4");
+        assertEquals(Bip32KeyDerivator.mangle(loginXpub), path[4] & 0x7FFFFFFF,
                 "connector index discriminates the avatar link");
 
         assertNotEquals(44, path[0] & 0x7FFFFFFF, "no BIP-44 purpose");
         assertNotEquals(Protocol.NOSTR.coinType(), path[1] & 0x7FFFFFFF, "no nostr coin type");
+
+        // The vault rejects paths shorter than five levels and derives the key
+        // type from level 4, so a connector path must be executable as-is.
+        var vault = new Bip32KeyVault(TEST_MNEMONIC);
+        var result = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, path);
+        assertTrue(result.isOk(), "vault must accept the connector path, status=" + result.status());
+        assertNotNull(result.chainCode(), "an xpub needs the chain code");
     }
 
     @Test

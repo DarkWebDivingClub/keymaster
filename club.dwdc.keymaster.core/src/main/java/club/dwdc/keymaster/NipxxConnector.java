@@ -63,7 +63,7 @@ public class NipxxConnector implements Connector {
      * that path for deterministic service channel derivation.
      * Must be called before {@link #connect}.
      *
-     * @param connectorPath {@code m/KM_PURPOSE'/KM_SCHEME'/realmId'/mangle(login_xpub)'}
+     * @param connectorPath {@code m/KM_PURPOSE'/KM_SCHEME'/realmId'/alg'/mangle(login_xpub)'}
      *                      — the connection key, parent of this link's channel keys
      * @param realmXpub     the xpub at {@code connectorPath}, sent to the avatar
      */
