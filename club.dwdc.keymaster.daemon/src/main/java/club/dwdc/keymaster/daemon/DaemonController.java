@@ -259,12 +259,18 @@ public class DaemonController implements DaemonServer.RequestHandler {
      *               approval policy is controller-wide here
      */
     private KeyMasterController controller(String policy) {
-        if (currentCtrl == null) {
+        boolean fresh = currentCtrl == null;
+        if (fresh) {
             KeyVault vault = new Bip32KeyVault(seedStore.getMnemonic(), seedStore.getPassphrase());
             var keyStore = new FileKeyMetaDataStore(configDir);
             currentCtrl = new KeyMasterController(new KeyMaster(vault, keyStore));
         }
-        if (policy != null) {
+        // An omitted policy must not leave the controller without a handler: a
+        // null approval UI denies every ASK method rather than prompting, which
+        // would silently turn "attach without --policy" from interactive into
+        // broken. On a fresh controller it means the default, interactive
+        // policy; afterwards it means "leave the policy as it is".
+        if (policy != null || fresh) {
             ApprovalHandler handler = "auto".equals(policy)
                     ? new AutoApprovalHandler()
                     : new PolicyConfig(configDir.resolve("policy.conf"),
