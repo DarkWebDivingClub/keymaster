@@ -67,8 +67,7 @@ public class NostrTransport {
 
     /** Vault and realm base path for deriving service channel keys. */
     private KeyVault vault;
-    private int[] realmBasePath;
-    private int realmIndex;
+    private int[] connectorPath;
 
     private final ConcurrentHashMap<String, CompletableFuture<JsonObject>> pendingResponses =
             new ConcurrentHashMap<>();
@@ -138,12 +137,11 @@ public class NostrTransport {
 
     /**
      * Set the vault and realm base path for deterministic service channel derivation.
-     * Service channel keys are derived at: realmBasePath / realmIndex / protocolIdx / seq
+     * Service channel keys are derived at: connectorPath / protocolIdx / seq
      */
-    public void setRealmVault(KeyVault vault, int[] realmBasePath, int realmIndex) {
+    public void setRealmVault(KeyVault vault, int[] connectorPath) {
         this.vault = vault;
-        this.realmBasePath = realmBasePath;
-        this.realmIndex = realmIndex;
+        this.connectorPath = connectorPath;
     }
 
     /**
@@ -251,7 +249,7 @@ public class NostrTransport {
      * Both sides compute the same channel pubkeys independently.
      */
     private void deriveServiceChannels(String avatarLoginXpub, List<String> services) {
-        if (vault == null || realmBasePath == null) {
+        if (vault == null || connectorPath == null) {
             log.warn("No realm vault/path set — cannot derive service channels");
             return;
         }
@@ -262,8 +260,8 @@ public class NostrTransport {
                 int protocolIdx = Bip32KeyDerivator.mangle(serviceType);
                 int seq = 0;
 
-                // Build extended vault path: realmBasePath / realmIndex / protocolIdx / seq
-                int[] svcPath = extendPath(realmBasePath, realmIndex, protocolIdx, seq);
+                // Build extended vault path: connectorPath / protocolIdx / seq
+                int[] svcPath = extendPath(connectorPath, protocolIdx, seq);
 
                 // Derive our (KM) service channel public key from vault
                 VaultResult pubResult = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, svcPath);

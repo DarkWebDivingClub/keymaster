@@ -1,9 +1,13 @@
 package club.dwdc.keymaster.cli;
 
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonPrimitive;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * KeyMaster CLI — {@code km-cli} entry point.
@@ -42,7 +46,7 @@ public class Main {
         return switch (args[0]) {
             case "identity" -> handleIdentity(args);
             case "attach" -> handleAttach(args);
-            case "detach" -> handleDetach();
+            case "detach" -> handleDetach(args);
             case "status" -> handleStatus();
             default -> {
                 System.err.println("Unknown command: " + args[0]);
@@ -123,46 +127,112 @@ public class Main {
         String descriptorPath = args[1];
         String identity = null;
         String policy = null;
+        String realmName = null;
+        Integer joinRealmId = null;
+        JsonArray identities = new JsonArray();
 
         for (int i = 2; i < args.length; i++) {
             if ("--identity".equals(args[i]) && i + 1 < args.length) {
                 identity = args[++i];
             } else if ("--policy".equals(args[i]) && i + 1 < args.length) {
                 policy = args[++i];
+            } else if ("--realm-name".equals(args[i]) && i + 1 < args.length) {
+                realmName = args[++i];
+            } else if ("--realm".equals(args[i]) && i + 1 < args.length) {
+                joinRealmId = Integer.parseInt(args[++i]);
+            } else if ("--also".equals(args[i]) && i + 1 < args.length) {
+                identities.add(alsoIdentity(args[++i]));
             }
         }
 
-        if (identity == null) {
-            System.err.println("--identity is required");
+        if (joinRealmId == null && identity == null) {
+            System.err.println("--identity is required (or --realm <id> to join an existing realm)");
             return 1;
         }
 
         JsonObject params = new JsonObject();
         params.addProperty("descriptor", descriptorPath);
-        params.addProperty("identity", identity);
+        if (joinRealmId != null) {
+            params.addProperty("realm_id", joinRealmId);
+        } else {
+            params.addProperty("identity", identity);
+            if (realmName != null) {
+                params.addProperty("realm_name", realmName);
+            }
+            if (!identities.isEmpty()) {
+                params.add("identities", identities);
+            }
+        }
         if (policy != null) {
             params.addProperty("policy", policy);
         }
 
         return rpc("session.attach", params, result -> {
-            System.out.println("Attached. Session: " + result.get("sessionId").getAsString());
+            System.out.println("Attached to realm " + result.get("realmId").getAsInt()
+                    + " (" + result.get("realmName").getAsString() + ")"
+                    + " as connector " + result.get("connectorId").getAsInt());
+            System.out.println("Identities: " + joinList(result.getAsJsonArray("identities")));
+            System.out.println("Session: " + result.get("sessionId").getAsString());
         });
     }
 
-    private static int handleDetach() {
-        return rpc("session.detach", new JsonObject(), result -> {
+    /**
+     * Parse an {@code --also} value: {@code bob@example.com} for all protocols,
+     * or {@code bob@example.com:ssh,gpg} to serve only those.
+     */
+    private static JsonElement alsoIdentity(String value) {
+        int colon = value.indexOf(':');
+        if (colon < 0) {
+            return new JsonPrimitive(value);
+        }
+        JsonObject entry = new JsonObject();
+        entry.addProperty("identity", value.substring(0, colon));
+        JsonArray protocols = new JsonArray();
+        for (String protocol : value.substring(colon + 1).split(",")) {
+            if (!protocol.isBlank()) {
+                protocols.add(protocol.trim());
+            }
+        }
+        entry.add("protocols", protocols);
+        return entry;
+    }
+
+    private static String joinList(JsonArray array) {
+        List<String> values = new ArrayList<>();
+        array.forEach(element -> values.add(element.getAsString()));
+        return String.join(", ", values);
+    }
+
+    private static int handleDetach(String[] args) {
+        JsonObject params = new JsonObject();
+        for (int i = 1; i < args.length; i++) {
+            if ("--realm".equals(args[i]) && i + 1 < args.length) {
+                params.addProperty("realm_id", Integer.parseInt(args[++i]));
+            } else if ("--connector".equals(args[i]) && i + 1 < args.length) {
+                params.addProperty("connector_id", Integer.parseInt(args[++i]));
+            }
+        }
+        return rpc("session.detach", params, result -> {
             System.out.println("Detached.");
         });
     }
 
     private static int handleStatus() {
         return rpc("session.status", new JsonObject(), result -> {
-            boolean attached = result.get("attached").getAsBoolean();
-            if (attached) {
-                System.out.println("Attached as " + result.get("identity").getAsString());
-                System.out.println("Session: " + result.get("sessionId").getAsString());
-            } else {
+            if (!result.get("attached").getAsBoolean()) {
                 System.out.println("Not attached.");
+                return;
+            }
+            for (JsonElement element : result.getAsJsonArray("realms")) {
+                JsonObject realm = element.getAsJsonObject();
+                List<String> connectors = new ArrayList<>();
+                realm.getAsJsonArray("connectors")
+                        .forEach(c -> connectors.add(String.valueOf(c.getAsInt())));
+                System.out.println("Realm " + realm.get("realmId").getAsInt()
+                        + " (" + realm.get("realmName").getAsString() + ")");
+                System.out.println("  Identities: "
+                        + joinList(realm.getAsJsonArray("identities")));
+                System.out.println("  Connectors: " + String.join(", ", connectors));
             }
         });
     }
@@ -214,10 +284,14 @@ public class Main {
         System.err.println("  identity create <id>          Create a new identity");
         System.err.println("  identity list                 List all identities");
         System.err.println("  identity show <id>            Show identity details");
-        System.err.println("  attach <desc.json> --identity <id> [--policy auto]");
-        System.err.println("                                Attach to an avatar");
-        System.err.println("  detach                        Detach from the avatar");
-        System.err.println("  status                        Show session status");
+        System.err.println("  attach <desc.json> --identity <id> [--realm-name <name>]");
+        System.err.println("                     [--also <id>[:ssh,gpg,nostr]]... [--policy auto]");
+        System.err.println("                                Create a realm and attach to an avatar");
+        System.err.println("  attach <desc.json> --realm <realmId> [--policy auto]");
+        System.err.println("                                Attach another avatar to an existing realm");
+        System.err.println("  detach [--realm <realmId> [--connector <connectorId>]]");
+        System.err.println("                                Detach one connector, one realm, or all");
+        System.err.println("  status                        Show realms and their connectors");
     }
 
     @FunctionalInterface

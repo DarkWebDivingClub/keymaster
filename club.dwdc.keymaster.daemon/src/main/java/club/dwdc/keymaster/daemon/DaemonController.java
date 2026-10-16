@@ -2,8 +2,11 @@ package club.dwdc.keymaster.daemon;
 
 import club.dwdc.keymaster.ApprovalHandler;
 import club.dwdc.keymaster.AvatarDescriptor;
+import club.dwdc.keymaster.Identity;
+import club.dwdc.keymaster.IdentitySelection;
 import club.dwdc.keymaster.KeyMaster;
 import club.dwdc.keymaster.KeyMasterController;
+import club.dwdc.keymaster.Realm;
 import club.dwdc.keymaster.desktop.AutoApprovalHandler;
 import club.dwdc.keymaster.desktop.FileIdentityStore;
 import club.dwdc.keymaster.desktop.FileKeyMetaDataStore;
@@ -11,19 +14,27 @@ import club.dwdc.keymaster.desktop.KDialogApprovalHandler;
 import club.dwdc.keymaster.desktop.PolicyConfig;
 import club.dwdc.keyvault.core.Bip32KeyVault;
 import club.dwdc.keyvault.core.KeyVault;
+import club.dwdc.keyvault.core.Protocol;
 import club.dwdc.keyvault.core.SeedStore;
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Set;
 
 /**
  * Business logic for the KeyMaster daemon — implements JSON-RPC method dispatch.
  *
- * <p>Manages identity creation/listing and a single attach session at a time.
+ * <p>Manages identity creation and listing, and any number of realms: each
+ * {@code session.attach} either creates a realm and its first connector or adds
+ * a connector to a realm that already exists.
  */
 public class DaemonController implements DaemonServer.RequestHandler {
 
@@ -34,8 +45,6 @@ public class DaemonController implements DaemonServer.RequestHandler {
     private final Path configDir;
 
     private KeyMasterController currentCtrl;
-    private String currentSessionId;
-    private String currentIdentity;
 
     public DaemonController(SeedStore seedStore, FileIdentityStore identityStore, Path configDir) {
         this.seedStore = seedStore;
@@ -51,7 +60,7 @@ public class DaemonController implements DaemonServer.RequestHandler {
             case "identity.list" -> identityList();
             case "identity.show" -> identityShow(params);
             case "session.attach" -> sessionAttach(params);
-            case "session.detach" -> sessionDetach();
+            case "session.detach" -> sessionDetach(params);
             case "session.status" -> sessionStatus();
             default -> error("unknown method: " + method);
         };
@@ -122,61 +131,150 @@ public class DaemonController implements DaemonServer.RequestHandler {
     }
 
     private JsonObject sessionAttach(JsonObject params) {
-        if (currentCtrl != null) {
-            return error("Already attached. Detach first.");
-        }
-
         String descriptorPath = requireString(params, "descriptor");
-        String identity = requireString(params, "identity");
-        String policy = params.has("policy") ? params.get("policy").getAsString() : null;
-
         if (descriptorPath == null) {
             return error("missing 'descriptor' parameter");
         }
-        if (identity == null) {
-            return error("missing 'identity' parameter");
-        }
-
-        if (!seedStore.exists()) {
-            return error("No seed found. Run 'kv-cli seed generate' first.");
-        }
+        String policy = requireString(params, "policy");
 
         try {
             String descriptorJson = Files.readString(Path.of(descriptorPath));
             AvatarDescriptor descriptor = AvatarDescriptor.fromJson(descriptorJson);
 
-            KeyVault vault = new Bip32KeyVault(seedStore.getMnemonic(), seedStore.getPassphrase());
-            var keyStore = new FileKeyMetaDataStore(configDir);
-            KeyMaster km = new KeyMaster(vault, keyStore);
-            KeyMasterController ctrl = new KeyMasterController(km);
+            KeyMasterController ctrl = controller(policy);
 
-            ApprovalHandler handler;
-            if ("auto".equals(policy)) {
-                handler = new AutoApprovalHandler();
-            } else {
-                Path policyPath = configDir.resolve("policy.conf");
-                handler = new PolicyConfig(policyPath, new KDialogApprovalHandler());
+            // "connect to an existing realm" — the join outcome of a QR scan
+            if (params.has("realm_id") && !params.get("realm_id").isJsonNull()) {
+                int realmId = params.get("realm_id").getAsInt();
+                Realm realm = ctrl.getRealm(realmId);
+                if (realm == null) {
+                    return error("No such realm: " + realmId);
+                }
+                Realm.AttachResult result = ctrl.attachToRealm(realmId, descriptor);
+                return attachResult(realm, result);
             }
-            ctrl.setApprovalHandler(handler);
 
-            String sessionId = ctrl.attach(descriptor, identity);
+            // "create a new realm"
+            String identity = requireString(params, "identity");
+            if (identity == null) {
+                return error("missing 'identity' parameter");
+            }
+            Identity primary = new Identity(identity);
+            List<IdentitySelection> selections = parseSelections(params, primary);
+            if (selections == null) {
+                return error("'identities' entries need an identity and optional protocols");
+            }
 
-            this.currentCtrl = ctrl;
-            this.currentSessionId = sessionId;
-            this.currentIdentity = identity;
-
-            JsonObject result = new JsonObject();
-            result.addProperty("sessionId", sessionId);
-            result.addProperty("identity", identity);
-            return result;
+            Realm realm = ctrl.createRealm(requireString(params, "realm_name"),
+                    primary, selections);
+            try {
+                Realm.AttachResult result = realm.attach(descriptor);
+                return attachResult(realm, result);
+            } catch (Exception e) {
+                ctrl.detachRealm(realm.id());
+                throw e;
+            }
         } catch (Exception e) {
             log.error("Attach failed", e);
             return error("Attach failed: " + e.getMessage());
         }
     }
 
-    private JsonObject sessionDetach() {
+    /**
+     * The realm's selections: the primary identity, plus whatever the optional
+     * {@code identities} array carries. Entries are either a plain identity
+     * string or an object with an identity and a list of protocol names, which
+     * is how a per-identity protocol filter reaches the daemon — expressible
+     * only because selection is data rather than a predicate.
+     *
+     * @return the selections, or {@code null} if an entry is malformed
+     */
+    private List<IdentitySelection> parseSelections(JsonObject params, Identity primary) {
+        List<IdentitySelection> selections = new ArrayList<>();
+        selections.add(new IdentitySelection(primary));
+
+        if (!params.has("identities") || !params.get("identities").isJsonArray()) {
+            return selections;
+        }
+        for (JsonElement element : params.getAsJsonArray("identities")) {
+            String name;
+            Set<Integer> coinTypes = Set.of();
+            if (element.isJsonPrimitive()) {
+                name = element.getAsString();
+            } else if (element.isJsonObject()) {
+                JsonObject entry = element.getAsJsonObject();
+                name = requireString(entry, "identity");
+                if (entry.has("protocols") && entry.get("protocols").isJsonArray()) {
+                    Set<Integer> parsed = new LinkedHashSet<>();
+                    for (JsonElement protocol : entry.getAsJsonArray("protocols")) {
+                        Integer coinType = coinTypeOf(protocol.getAsString());
+                        if (coinType == null) {
+                            return null;
+                        }
+                        parsed.add(coinType);
+                    }
+                    coinTypes = parsed;
+                }
+            } else {
+                return null;
+            }
+            if (name == null || name.isBlank()) {
+                return null;
+            }
+            if (!name.equals(primary.name())) {
+                selections.add(new IdentitySelection(new Identity(name), coinTypes));
+            }
+        }
+        return selections;
+    }
+
+    private static Integer coinTypeOf(String protocol) {
+        return switch (protocol.toLowerCase()) {
+            case "ssh" -> Protocol.SSH.coinType();
+            case "gpg", "openpgp" -> Protocol.OPENPGP.coinType();
+            case "nostr" -> Protocol.NOSTR.coinType();
+            case "mls" -> Protocol.MLS.coinType();
+            default -> null;
+        };
+    }
+
+    private JsonObject attachResult(Realm realm, Realm.AttachResult result) {
+        JsonObject json = new JsonObject();
+        json.addProperty("sessionId", result.attachEventId());
+        json.addProperty("realmId", realm.id());
+        json.addProperty("realmName", realm.name());
+        json.addProperty("connectorId", result.connectorId());
+        json.addProperty("identity", realm.primaryIdentity().name());
+        json.add("identities", names(realm));
+        return json;
+    }
+
+    /**
+     * The daemon's single controller, created on first use. Realms come and go
+     * within it; the controller itself holds the vault and the metadata store.
+     *
+     * @param policy {@code "auto"} for auto-approval, otherwise the policy file
+     *               plus an interactive prompt. Applies to every realm, since
+     *               approval policy is controller-wide here
+     */
+    private KeyMasterController controller(String policy) {
         if (currentCtrl == null) {
+            KeyVault vault = new Bip32KeyVault(seedStore.getMnemonic(), seedStore.getPassphrase());
+            var keyStore = new FileKeyMetaDataStore(configDir);
+            currentCtrl = new KeyMasterController(new KeyMaster(vault, keyStore));
+        }
+        if (policy != null) {
+            ApprovalHandler handler = "auto".equals(policy)
+                    ? new AutoApprovalHandler()
+                    : new PolicyConfig(configDir.resolve("policy.conf"),
+                            new KDialogApprovalHandler());
+            currentCtrl.setApprovalHandler(handler);
+        }
+        return currentCtrl;
+    }
+
+    private JsonObject sessionDetach(JsonObject params) {
+        if (currentCtrl == null || currentCtrl.realms().isEmpty()) {
             JsonObject result = new JsonObject();
             result.addProperty("status", "ok");
             result.addProperty("message", "Not attached.");
@@ -184,13 +282,22 @@ public class DaemonController implements DaemonServer.RequestHandler {
         }
 
         try {
-            currentCtrl.detach();
+            boolean hasRealm = params != null && params.has("realm_id")
+                    && !params.get("realm_id").isJsonNull();
+            boolean hasConnector = params != null && params.has("connector_id")
+                    && !params.get("connector_id").isJsonNull();
+
+            if (hasRealm && hasConnector) {
+                currentCtrl.detach(params.get("realm_id").getAsInt(),
+                        params.get("connector_id").getAsInt());
+            } else if (hasRealm) {
+                currentCtrl.detachRealm(params.get("realm_id").getAsInt());
+            } else {
+                currentCtrl.detachAll();
+            }
         } catch (Exception e) {
             log.error("Detach error", e);
-        } finally {
-            currentCtrl = null;
-            currentSessionId = null;
-            currentIdentity = null;
+            return error("Detach failed: " + e.getMessage());
         }
 
         JsonObject result = new JsonObject();
@@ -200,12 +307,31 @@ public class DaemonController implements DaemonServer.RequestHandler {
 
     private JsonObject sessionStatus() {
         JsonObject result = new JsonObject();
-        result.addProperty("attached", currentCtrl != null);
+        boolean attached = currentCtrl != null && !currentCtrl.realms().isEmpty();
+        result.addProperty("attached", attached);
+
+        JsonArray realms = new JsonArray();
         if (currentCtrl != null) {
-            result.addProperty("identity", currentIdentity);
-            result.addProperty("sessionId", currentSessionId);
+            for (Realm realm : currentCtrl.realms().values()) {
+                JsonObject json = new JsonObject();
+                json.addProperty("realmId", realm.id());
+                json.addProperty("realmName", realm.name());
+                json.addProperty("identity", realm.primaryIdentity().name());
+                json.add("identities", names(realm));
+                JsonArray connectors = new JsonArray();
+                realm.connectorIds().forEach(connectors::add);
+                json.add("connectors", connectors);
+                realms.add(json);
+            }
         }
+        result.add("realms", realms);
         return result;
+    }
+
+    private static JsonArray names(Realm realm) {
+        JsonArray arr = new JsonArray();
+        realm.identityNames().forEach(arr::add);
+        return arr;
     }
 
     /**
@@ -214,13 +340,11 @@ public class DaemonController implements DaemonServer.RequestHandler {
     void shutdown() {
         if (currentCtrl != null) {
             try {
-                currentCtrl.detach();
+                currentCtrl.detachAll();
             } catch (Exception e) {
                 log.warn("Shutdown detach error", e);
             }
             currentCtrl = null;
-            currentSessionId = null;
-            currentIdentity = null;
         }
     }
 

@@ -86,32 +86,26 @@ class KeyMasterControllerTest {
         var ctrl = new KeyMasterController(km);
         ctrl.createIdentity("alice@atlanta.com", "Alice", "alice@atlanta.com");
 
-        // Manually build realm + handlers (simulating what attach does)
-        int mangledIdentity = Bip32KeyDerivator.mangle("alice@atlanta.com");
-        List<KeyEntry> sshKeys = store.keysByIdentity(mangledIdentity).stream()
-                .filter(k -> k.coinType() == Protocol.SSH.coinType())
-                .toList();
-        List<KeyEntry> gpgKeys = store.keysByIdentity(mangledIdentity).stream()
-                .filter(k -> k.coinType() == Protocol.OPENPGP.coinType())
-                .toList();
-        SshServiceHandler sshHandler = new SshServiceHandler(vault, sshKeys);
-        GpgServiceHandler gpgHandler = new GpgServiceHandler(vault, gpgKeys);
-        Realm realm = new Realm();
-        realm.putHandler(Protocol.SSH.coinType(), sshHandler);
-        realm.putHandler(Protocol.OPENPGP.coinType(), gpgHandler);
-        km.realms.put("alice@atlanta.com", realm);
+        // A realm resolves its own handlers from the store
+        Realm realm = ctrl.createRealm("work", new Identity("alice@atlanta.com"));
+        assertNotNull(realm.getHandler(Protocol.SSH.coinType()));
+        assertNotNull(realm.getHandler(Protocol.OPENPGP.coinType()));
 
-        // Simulate attach setting currentIdentity by using attach with a mock connector
-        // attach requires a real relay, so we test setApprovalHandler before attach:
-        // set handler, then verify it's stored for later use by attach
+        // Setting the handler afterwards reaches the realm's live handlers
         AtomicBoolean called = new AtomicBoolean(false);
         ctrl.setApprovalHandler((type, detail) -> {
             called.set(true);
             return true;
         });
 
-        // Verify handler is stored (no currentIdentity yet, so no propagation)
-        assertNotNull(ctrl.getKeyMaster());
+        realm.getHandler(Protocol.SSH.coinType()).keys();
+        ((SshServiceHandler) realm.getHandler(Protocol.SSH.coinType())).requestIdentities();
+        assertFalse(called.get(), "request_identities defaults to APPROVE, so no prompt");
+
+        ((SshServiceHandler) realm.getHandler(Protocol.SSH.coinType()))
+                .setPolicy("request_identities", ApprovalPolicy.ASK);
+        ((SshServiceHandler) realm.getHandler(Protocol.SSH.coinType())).requestIdentities();
+        assertTrue(called.get(), "an ASK method must reach the approval handler");
     }
 
     @Test

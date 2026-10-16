@@ -8,17 +8,19 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * KeyMaster — passive state holder for the DWDC Key System.
  *
- * <p>Holds the vault, key metadata store, realms, and connectors.
- * Orchestration (identity creation, realm building, attach/detach)
- * is handled by {@link KeyMasterController}.</p>
+ * <p>Holds the vault, the key metadata store, and the realms, keyed by realm
+ * id. There is no flat connector map: a connector belongs to exactly one realm
+ * and is reached through it, and inbound events need no registry because each
+ * connector decrypts with its own channel keys. Orchestration (identity
+ * creation, realm building, attach/detach) is handled by
+ * {@link KeyMasterController}.</p>
  */
 public class KeyMaster {
 
     public final KeyVault vault;
     public final KeyMetaDataStore keyMetaDataStore;
     public final KVMetaStore kvMetaStore;
-    public final Map<String, Realm> realms = new ConcurrentHashMap<>();
-    public final Map<String, Connector> connectors = new ConcurrentHashMap<>();
+    public final Map<Integer, Realm> realms = new ConcurrentHashMap<>();
 
     /**
      * Create a KeyMaster from a ready-to-use KeyVault.

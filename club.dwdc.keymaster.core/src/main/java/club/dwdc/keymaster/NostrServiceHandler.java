@@ -72,8 +72,23 @@ public class NostrServiceHandler extends AbstractServiceHandler {
     private final Map<ByteArrayKey, Integer> mlsPubkeyToMangled = new HashMap<>();
     private final Map<ByteArrayKey, HpkePathInfo> hpkePubkeyToPath = new HashMap<>();
 
+    /** MLS key paths this realm serves, resolved at construction. */
+    private final List<KeyEntry> mlsKeys;
+
     public NostrServiceHandler(KeyVault vault, List<KeyEntry> keys) {
+        this(vault, keys, List.of());
+    }
+
+    /**
+     * @param keys    Nostr key paths (coin type 1237)
+     * @param mlsKeys MLS key paths (coin type 1242), or empty. When a signing
+     *                key for an identity is present it is used as stored;
+     *                otherwise the path is derived, which is what happens on
+     *                stores that hold no MLS entries
+     */
+    public NostrServiceHandler(KeyVault vault, List<KeyEntry> keys, List<KeyEntry> mlsKeys) {
         super(vault, keys);
+        this.mlsKeys = mlsKeys == null ? List.of() : List.copyOf(mlsKeys);
     }
 
     /**
@@ -189,7 +204,7 @@ public class NostrServiceHandler extends AbstractServiceHandler {
         // which equals mangle(identity) — works for all identities regardless
         // of whether identity metadata is present on the key entry.
         int mangledIdentity = nostrKey.toVaultPath()[2] & ~H;
-        int[] path = buildMlsSignPath(mangledIdentity);
+        int[] path = mlsSignPath(mangledIdentity);
         VaultResult result = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, path);
         if (!result.isOk()) {
             throw new IllegalStateException("MLS pubkey derivation failed: status=" + result.status());
@@ -210,7 +225,7 @@ public class NostrServiceHandler extends AbstractServiceHandler {
         if (mangled == null) {
             throw new IllegalArgumentException("unknown MLS pubkey — call get_mls_pubkey first");
         }
-        int[] path = buildMlsSignPath(mangled);
+        int[] path = mlsSignPath(mangled);
         VaultResult result = vault.execute(KeyVault.FN_SIGN, request.data(), path);
         if (!result.isOk()) {
             throw new IllegalStateException("MLS sign failed: status=" + result.status());
@@ -362,6 +377,27 @@ public class NostrServiceHandler extends AbstractServiceHandler {
     }
 
     // -- private helpers --
+
+    /**
+     * The MLS signing path for an identity: the stored entry when this realm
+     * resolved one, otherwise derived.
+     *
+     * <p>Only the signing key can come from the store. HPKE keys live at a
+     * runtime sequence index ({@code mls_next_hpke_init_key}), so there is no
+     * finite set of them to resolve up front.
+     */
+    private int[] mlsSignPath(int mangledIdentity) {
+        int signAlg = new AlgField(AlgField.ALG_ED25519, 0, AlgField.ROLE_SIGN).toIndex();
+        for (KeyEntry key : mlsKeys) {
+            int[] path = key.toVaultPath();
+            if (path.length == 5
+                    && (path[2] & ~H) == mangledIdentity
+                    && (path[3] & ~H) == signAlg) {
+                return path;
+            }
+        }
+        return buildMlsSignPath(mangledIdentity);
+    }
 
     /**
      * Build the MLS Ed25519 signing key path from a pre-computed mangled identity.

@@ -13,7 +13,6 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.function.Predicate;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -51,14 +50,46 @@ class RealmTest {
                 "pgp_email", identity));
     }
 
+    static KeyEntry nostrKeyEntry(String identity) {
+        HDPath path = HDPath.m(
+            new ChildNumber(44, true),
+            new ChildNumber(Protocol.NOSTR.coinType(), true),
+            new ChildNumber(Bip32KeyDerivator.mangle(identity), true),
+            new ChildNumber(new AlgField(AlgField.ALG_SCHNORR, 0, 0).toIndex(), true),
+            new ChildNumber(new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex(), true)
+        );
+        return new KeyEntry(path, Map.of("identity", identity));
+    }
+
+    static KeyEntry mlsKeyEntry(String identity) {
+        HDPath path = HDPath.m(
+            new ChildNumber(44, true),
+            new ChildNumber(Protocol.MLS.coinType(), true),
+            new ChildNumber(Bip32KeyDerivator.mangle(identity), true),
+            new ChildNumber(new AlgField(AlgField.ALG_ED25519, 0, AlgField.ROLE_SIGN).toIndex(), true),
+            new ChildNumber(new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex(), true)
+        );
+        return new KeyEntry(path, Map.of("identity", identity));
+    }
+
+    /** Mirrors what {@code createIdentity} writes: ssh, gpg x2, nostr, mls. */
     static void populateStore(InMemoryKeyMetaDataStore store, String identity) {
         store.addIdentity(identity);
         store.addKey(sshKeyEntry(identity));
         store.addKey(gpgKeyEntry(identity, 0, "certification"));
         store.addKey(gpgKeyEntry(identity, 1, "signing"));
+        store.addKey(nostrKeyEntry(identity));
+        store.addKey(mlsKeyEntry(identity));
     }
 
-    // ── resolveHandlers tests ─────────────────────────────────────────────
+    /** Build a realm the way the controller does: selections resolved against a store. */
+    static Realm realm(InMemoryKeyMetaDataStore store, KeyVault vault,
+                       Identity primary, IdentitySelection... selections) {
+        return new Realm(1234, "myFirstRealm", List.of(selections), primary,
+                vault, store.allKeys(), null);
+    }
+
+    // ── handler resolution tests ──────────────────────────────────────────
 
     @Test
     void resolveHandlers_singleIdentity_createsBothHandlers() {
@@ -66,15 +97,14 @@ class RealmTest {
         var store = new InMemoryKeyMetaDataStore();
         populateStore(store, "alice@atlanta.com");
 
-        int aliceHash = Bip32KeyDerivator.mangle("alice@atlanta.com");
-        Predicate<KeyEntry> selectAlice = k -> k.identity() == aliceHash;
-
-        var realm = new Realm(List.of(selectAlice), store, vault, null);
+        var alice = new Identity("alice@atlanta.com");
+        var realm = realm(store, vault, alice, new IdentitySelection(alice));
 
         assertNotNull(realm.getHandler(Protocol.SSH.coinType()));
         assertNotNull(realm.getHandler(Protocol.OPENPGP.coinType()));
         assertEquals(
-                Set.of(Protocol.SSH.coinType(), Protocol.OPENPGP.coinType()),
+                Set.of(Protocol.SSH.coinType(), Protocol.OPENPGP.coinType(),
+                        Protocol.NOSTR.coinType()),
                 realm.getHandlerCoinTypes());
     }
 
@@ -85,9 +115,9 @@ class RealmTest {
         populateStore(store, "alice@atlanta.com");
 
         // Filter to SSH keys only
-        Predicate<KeyEntry> sshOnly = k -> k.coinType() == Protocol.SSH.coinType();
-
-        var realm = new Realm(List.of(sshOnly), store, vault, null);
+        var alice = new Identity("alice@atlanta.com");
+        var realm = realm(store, vault, alice,
+                new IdentitySelection(alice, Set.of(Protocol.SSH.coinType())));
 
         assertNotNull(realm.getHandler(Protocol.SSH.coinType()));
         assertNull(realm.getHandler(Protocol.OPENPGP.coinType()));
@@ -101,17 +131,16 @@ class RealmTest {
         populateStore(store, "alice@atlanta.com");
         populateStore(store, "bob@ssh.com");
 
-        int aliceHash = Bip32KeyDerivator.mangle("alice@atlanta.com");
-        int bobHash = Bip32KeyDerivator.mangle("bob@ssh.com");
-        Predicate<KeyEntry> selectAlice = k -> k.identity() == aliceHash;
-        Predicate<KeyEntry> selectBob = k -> k.identity() == bobHash;
-
-        var realm = new Realm(List.of(selectAlice, selectBob), store, vault, null);
+        var alice = new Identity("alice@atlanta.com");
+        var bob = new Identity("bob@ssh.com");
+        var realm = realm(store, vault, alice,
+                new IdentitySelection(alice), new IdentitySelection(bob));
 
         assertNotNull(realm.getHandler(Protocol.SSH.coinType()));
         assertNotNull(realm.getHandler(Protocol.OPENPGP.coinType()));
         assertEquals(
-                Set.of(Protocol.SSH.coinType(), Protocol.OPENPGP.coinType()),
+                Set.of(Protocol.SSH.coinType(), Protocol.OPENPGP.coinType(),
+                        Protocol.NOSTR.coinType()),
                 realm.getHandlerCoinTypes());
     }
 
@@ -121,9 +150,8 @@ class RealmTest {
         var store = new InMemoryKeyMetaDataStore();
         populateStore(store, "alice@atlanta.com");
 
-        Predicate<KeyEntry> all = k -> true;
-
-        var realm = new Realm(List.of(all), store, vault, null);
+        var alice = new Identity("alice@atlanta.com");
+        var realm = realm(store, vault, alice, new IdentitySelection(alice));
 
         assertTrue(realm.getHandlerCoinTypes().contains(Protocol.SSH.coinType()));
         assertTrue(realm.getHandlerCoinTypes().contains(Protocol.OPENPGP.coinType()));
@@ -137,8 +165,8 @@ class RealmTest {
         var store = new InMemoryKeyMetaDataStore();
         populateStore(store, "alice@atlanta.com");
 
-        int aliceHash = Bip32KeyDerivator.mangle("alice@atlanta.com");
-        var realm = new Realm(List.of(k -> k.identity() == aliceHash), store, vault, null);
+        var alice = new Identity("alice@atlanta.com");
+        var realm = realm(store, vault, alice, new IdentitySelection(alice));
 
         assertInstanceOf(SshServiceHandler.class, realm.getHandler(Protocol.SSH.coinType()));
         assertInstanceOf(GpgServiceHandler.class, realm.getHandler(Protocol.OPENPGP.coinType()));
@@ -150,8 +178,8 @@ class RealmTest {
         var store = new InMemoryKeyMetaDataStore();
         populateStore(store, "alice@atlanta.com");
 
-        int aliceHash = Bip32KeyDerivator.mangle("alice@atlanta.com");
-        var realm = new Realm(List.of(k -> k.identity() == aliceHash), store, vault, null);
+        var alice = new Identity("alice@atlanta.com");
+        var realm = realm(store, vault, alice, new IdentitySelection(alice));
 
         assertNull(realm.getHandler(99999));
     }
@@ -160,8 +188,8 @@ class RealmTest {
 
     @Test
     void putHandler_setsHandler() {
-        var realm = new Realm();
         var vault = new Bip32KeyVault(TEST_MNEMONIC);
+        var realm = new Realm(1, "direct", new Identity("alice@atlanta.com"), vault);
         var handler = new SshServiceHandler(vault, List.of(sshKeyEntry("alice@atlanta.com")));
 
         realm.putHandler(Protocol.SSH.coinType(), handler);
@@ -171,8 +199,8 @@ class RealmTest {
 
     @Test
     void putHandler_replacesExistingHandler() {
-        var realm = new Realm();
         var vault = new Bip32KeyVault(TEST_MNEMONIC);
+        var realm = new Realm(1, "direct", new Identity("alice@atlanta.com"), vault);
         var first = new SshServiceHandler(vault, List.of(sshKeyEntry("alice@atlanta.com")));
         var second = new SshServiceHandler(vault, List.of(sshKeyEntry("bob@ssh.com")));
 
@@ -184,8 +212,8 @@ class RealmTest {
 
     @Test
     void getHandlerCoinTypes_reflectsPuts() {
-        var realm = new Realm();
         var vault = new Bip32KeyVault(TEST_MNEMONIC);
+        var realm = new Realm(1, "direct", new Identity("alice@atlanta.com"), vault);
 
         assertTrue(realm.getHandlerCoinTypes().isEmpty());
 
@@ -197,5 +225,197 @@ class RealmTest {
         assertEquals(
                 Set.of(Protocol.SSH.coinType(), Protocol.OPENPGP.coinType()),
                 realm.getHandlerCoinTypes());
+    }
+
+    // ── definition and invariants ─────────────────────────────────────────
+
+    @Test
+    void primaryIdentityNotAmongSelections_rejected() {
+        var vault = new Bip32KeyVault(TEST_MNEMONIC);
+        var store = new InMemoryKeyMetaDataStore();
+        populateStore(store, "alice@atlanta.com");
+
+        var alice = new Identity("alice@atlanta.com");
+        var stranger = new Identity("eve@elsewhere.net");
+
+        var e = assertThrows(IllegalArgumentException.class, () ->
+                new Realm(1234, "myFirstRealm", List.of(new IdentitySelection(alice)),
+                        stranger, vault, store.allKeys(), null));
+        assertTrue(e.getMessage().contains("not among the realm's selections"));
+    }
+
+    @Test
+    void mangleCollisionBetweenSelections_rejected() {
+        // A real collision in mangle()'s 31-bit space, found by search and
+        // pinned here: both names hash to 465816612. Two identities sharing a
+        // path index would merge their scopes and void each other's protocol
+        // filters, so the realm refuses to resolve.
+        var one = new Identity("c71864@t.io");
+        var two = new Identity("c100447@t.io");
+        assertEquals(one.mangled(), two.mangled(), "test fixture must collide");
+
+        var vault = new Bip32KeyVault(TEST_MNEMONIC);
+        var store = new InMemoryKeyMetaDataStore();
+        populateStore(store, one.name());
+
+        var e = assertThrows(IllegalArgumentException.class, () ->
+                new Realm(1234, "collides",
+                        List.of(new IdentitySelection(one), new IdentitySelection(two)),
+                        one, vault, store.allKeys(), null));
+        assertTrue(e.getMessage().contains("mangle collision"));
+    }
+
+    @Test
+    void sameIdentityTwice_accepted() {
+        var vault = new Bip32KeyVault(TEST_MNEMONIC);
+        var store = new InMemoryKeyMetaDataStore();
+        populateStore(store, "alice@atlanta.com");
+        var alice = new Identity("alice@atlanta.com");
+
+        var realm = realm(store, vault, alice,
+                new IdentitySelection(alice), new IdentitySelection(alice));
+
+        assertEquals(List.of("alice@atlanta.com"), realm.identityNames());
+    }
+
+    @Test
+    void identityFor_resolvesServedIdentitiesOnly() {
+        var vault = new Bip32KeyVault(TEST_MNEMONIC);
+        var store = new InMemoryKeyMetaDataStore();
+        populateStore(store, "alice@atlanta.com");
+        populateStore(store, "alice@home.org");
+
+        var atlanta = new Identity("alice@atlanta.com");
+        var home = new Identity("alice@home.org");
+        var realm = realm(store, vault, atlanta, new IdentitySelection(atlanta));
+
+        assertEquals(atlanta, realm.identityFor(atlanta.mangled()).orElseThrow());
+        assertTrue(realm.identityFor(home.mangled()).isEmpty(),
+                "a realm must not name an identity it does not serve");
+    }
+
+    @Test
+    void perIdentityProtocolFilter_servesOnlySelectedProtocols() {
+        var vault = new Bip32KeyVault(TEST_MNEMONIC);
+        var store = new InMemoryKeyMetaDataStore();
+        populateStore(store, "alice@atlanta.com");
+        populateStore(store, "alice@home.org");
+
+        var atlanta = new Identity("alice@atlanta.com");
+        var home = new Identity("alice@home.org");
+
+        // atlanta: everything. home.org: ssh only.
+        var realm = realm(store, vault, atlanta,
+                new IdentitySelection(atlanta),
+                new IdentitySelection(home, Set.of(Protocol.SSH.coinType())));
+
+        assertEquals(List.of("alice@atlanta.com", "alice@home.org"), realm.identityNames());
+
+        assertEquals(2, realm.getHandler(Protocol.SSH.coinType()).keys().size(),
+                "both identities contribute their SSH key");
+        assertEquals(2, realm.getHandler(Protocol.OPENPGP.coinType()).keys().size(),
+                "only atlanta's certification and signing keys");
+        assertEquals(1, realm.getHandler(Protocol.NOSTR.coinType()).keys().size(),
+                "only atlanta's nostr key");
+
+        int homeMangled = home.mangled();
+        assertTrue(realm.getHandler(Protocol.OPENPGP.coinType()).keys().stream()
+                        .noneMatch(k -> k.identity() == homeMangled),
+                "home.org contributed nothing but its SSH key");
+        assertTrue(realm.getHandler(Protocol.NOSTR.coinType()).keys().stream()
+                        .noneMatch(k -> k.identity() == homeMangled));
+
+        assertFalse(realm.getHandlerCoinTypes().contains(Protocol.MLS.coinType()),
+                "MLS is served by the nostr handler, not as a handler of its own");
+    }
+
+    @Test
+    void blankName_defaultsToPrimaryLocalPart() {
+        var vault = new Bip32KeyVault(TEST_MNEMONIC);
+        var store = new InMemoryKeyMetaDataStore();
+        populateStore(store, "alice@atlanta.com");
+        var alice = new Identity("alice@atlanta.com");
+
+        var realm = new Realm(1234, "  ", List.of(new IdentitySelection(alice)),
+                alice, vault, store.allKeys(), null);
+
+        assertEquals("alice", realm.name());
+    }
+
+    @Test
+    void rename_doesNotChangeAnyDerivedPath() {
+        var vault = new Bip32KeyVault(TEST_MNEMONIC);
+        var store = new InMemoryKeyMetaDataStore();
+        populateStore(store, "alice@atlanta.com");
+        var alice = new Identity("alice@atlanta.com");
+        var realm = realm(store, vault, alice, new IdentitySelection(alice));
+
+        int[] before = realm.primaryNostrPath();
+        realm.setName("something else entirely");
+
+        assertArrayEquals(before, realm.primaryNostrPath());
+        assertEquals(1234, realm.id());
+    }
+
+    // ── paths ─────────────────────────────────────────────────────────────
+
+    @Test
+    void connectorPath_isFourHardenedLevelsUnderKmPurpose() {
+        String loginXpub = "xpub6CUGRUonZSQ4TWtTMmzXdrXDtyPWKiKbbqnWxx2qaGvxZ2x";
+        int[] path = Realm.connectorPath(1234, loginXpub);
+
+        assertEquals(4, path.length, "purpose / scheme / realm / connector");
+        for (int level : path) {
+            assertTrue((level & 0x80000000) != 0, "every KM-side level is hardened");
+        }
+        assertEquals(1405226288, path[0] & 0x7FFFFFFF, "mangle(\"keymaster\") as BIP-43 purpose");
+        assertEquals(1, path[1] & 0x7FFFFFFF, "scheme version");
+        assertEquals(1234, path[2] & 0x7FFFFFFF, "realm id");
+        assertEquals(Bip32KeyDerivator.mangle(loginXpub), path[3] & 0x7FFFFFFF,
+                "connector index discriminates the avatar link");
+
+        assertNotEquals(44, path[0] & 0x7FFFFFFF, "no BIP-44 purpose");
+        assertNotEquals(Protocol.NOSTR.coinType(), path[1] & 0x7FFFFFFF, "no nostr coin type");
+    }
+
+    @Test
+    void primaryNostrPath_isTheIdentityNostrKey() {
+        var vault = new Bip32KeyVault(TEST_MNEMONIC);
+        var store = new InMemoryKeyMetaDataStore();
+        populateStore(store, "alice@atlanta.com");
+        var alice = new Identity("alice@atlanta.com");
+        var realm = realm(store, vault, alice, new IdentitySelection(alice));
+
+        int[] path = realm.primaryNostrPath();
+
+        assertEquals(5, path.length);
+        assertEquals(44, path[0] & 0x7FFFFFFF);
+        assertEquals(Protocol.NOSTR.coinType(), path[1] & 0x7FFFFFFF);
+        assertEquals(alice.mangled(), path[2] & 0x7FFFFFFF);
+    }
+
+    @Test
+    void identityKeys_unchangedByTheRefactor() {
+        // Golden values: the identity trees are frozen, so these must never
+        // move. See doc/key-derivation.md.
+        var vault = new Bip32KeyVault(TEST_MNEMONIC);
+
+        assertEquals(
+                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHeeTgJw+7G4gFYEZPDvW9bbMApCD+5Pdeq1butlUfjQ"
+                        + " alice@atlanta.com",
+                SshServiceHandler.getAuthorizedKeysLine(vault, "alice@atlanta.com"));
+
+        int H = 0x80000000;
+        int[] nostrPath = {
+                44 | H,
+                Protocol.NOSTR.coinType() | H,
+                new Identity("alice@atlanta.com").mangled() | H,
+                new AlgField(AlgField.ALG_SCHNORR, 0, 0).toIndex() | H,
+                new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex() | H
+        };
+        byte[] compressed = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, nostrPath).data();
+        assertEquals("fa7851825be694a747ec9d93ea0b46be6f36a40af6ec3c5b2682d1dafe59dd12",
+                nostr.util.NostrUtil.bytesToHex(
+                        java.util.Arrays.copyOfRange(compressed, 1, 33)));
     }
 }

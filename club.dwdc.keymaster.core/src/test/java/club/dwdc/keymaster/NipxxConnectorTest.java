@@ -73,7 +73,7 @@ class NipxxConnectorTest {
         GpgServiceHandler gpgHandler = new GpgServiceHandler(vault, gpgKeys);
         gpgHandler.setApprovalUI((m, d) -> true);
 
-        realm = new Realm();
+        realm = new Realm(1, "test", new Identity("alice@test.com"), vault);
         realm.putHandler(Protocol.SSH.coinType(), sshHandler);
         realm.putHandler(Protocol.OPENPGP.coinType(), gpgHandler);
 
@@ -125,8 +125,8 @@ class NipxxConnectorTest {
     @Test
     void handleServiceRequest_noHandler() {
         // Create connector with realm that only has SSH
-        Realm sshOnlyRealm = new Realm();
         var vault = new Bip32KeyVault(TEST_MNEMONIC);
+        Realm sshOnlyRealm = new Realm(2, "ssh-only", new Identity("alice@test.com"), vault);
         int mangledIdentity = Bip32KeyDerivator.mangle("alice@test.com");
         HDPath sshHdPath = HDPath.m(
                 new ChildNumber(44, true),

@@ -202,7 +202,7 @@ class ServiceChannelTest {
         SshServiceHandler sshHandler = new SshServiceHandler(
                 vault, List.of(SshServiceHandlerTest.sshKeyEntry("alice@test.com")));
 
-        Realm realm = new Realm();
+        Realm realm = new Realm(1, "test", new Identity("alice@test.com"), vault);
         realm.putHandler(Protocol.SSH.coinType(), sshHandler);
 
         ServiceChannel realmChannel = new ServiceChannel(
@@ -224,7 +224,7 @@ class ServiceChannelTest {
         SshServiceHandler handler1 = new SshServiceHandler(
                 vault, List.of(SshServiceHandlerTest.sshKeyEntry("alice@test.com")));
 
-        Realm realm = new Realm();
+        Realm realm = new Realm(1, "test", new Identity("alice@test.com"), vault);
         realm.putHandler(Protocol.SSH.coinType(), handler1);
 
         ServiceChannel realmChannel = new ServiceChannel(

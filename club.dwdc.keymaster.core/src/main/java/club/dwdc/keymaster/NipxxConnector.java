@@ -31,8 +31,7 @@ public class NipxxConnector implements Connector {
     private final Realm realm;
 
     private KeyVault vault;
-    private int[] realmBasePath;
-    private int realmIndex;
+    private int[] connectorPath;
     private String realmXpub;
 
     private NostrTransport transport;
@@ -60,15 +59,17 @@ public class NipxxConnector implements Connector {
     }
 
     /**
-     * Inject the vault, realm base path, realm index, and pre-computed xpub
-     * for deterministic service channel derivation.
+     * Inject the vault, this connector's key path, and the pre-computed xpub at
+     * that path for deterministic service channel derivation.
      * Must be called before {@link #connect}.
+     *
+     * @param connectorPath {@code m/KM_PURPOSE'/KM_SCHEME'/realmId'/mangle(login_xpub)'}
+     *                      — the connection key, parent of this link's channel keys
+     * @param realmXpub     the xpub at {@code connectorPath}, sent to the avatar
      */
-    public void setRealmVault(KeyVault vault, int[] realmBasePath, int realmIndex,
-                              String realmXpub) {
+    public void setRealmVault(KeyVault vault, int[] connectorPath, String realmXpub) {
         this.vault = vault;
-        this.realmBasePath = realmBasePath;
-        this.realmIndex = realmIndex;
+        this.connectorPath = connectorPath;
         this.realmXpub = realmXpub;
     }
 
@@ -82,14 +83,14 @@ public class NipxxConnector implements Connector {
 
     @Override
     public String connect(AvatarDescriptor avatar, TransportSigner signer) throws Exception {
-        if (this.vault == null || this.realmBasePath == null) {
+        if (this.vault == null || this.connectorPath == null) {
             throw new IllegalStateException(
-                    "realm vault must be set before connect()");
+                    "connector vault and path must be set before connect()");
         }
 
         // Transport uses the identity key directly — stable across reconnects
         this.transport = new NostrTransport(signer);
-        transport.setRealmVault(this.vault, this.realmBasePath, this.realmIndex);
+        transport.setRealmVault(this.vault, this.connectorPath);
         transport.setServiceRequestHandler(this::handleServiceRequest);
         if (connectionStateListener != null) {
             transport.setConnectionStateListener(connectionStateListener);
