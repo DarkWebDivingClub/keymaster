@@ -360,34 +360,6 @@ class RealmTest {
     // ── paths ─────────────────────────────────────────────────────────────
 
     @Test
-    void connectorPath_isFourHardenedLevelsUnderKmPurpose() {
-        String loginXpub = "xpub6CUGRUonZSQ4TWtTMmzXdrXDtyPWKiKbbqnWxx2qaGvxZ2x";
-        int[] path = Realm.connectorPath(1234, loginXpub);
-
-        assertEquals(5, path.length, "purpose / scheme / realm / alg / connector");
-        for (int level : path) {
-            assertTrue((level & 0x80000000) != 0, "every KM-side level is hardened");
-        }
-        assertEquals(1405226288, path[0] & 0x7FFFFFFF, "mangle(\"keymaster\") as BIP-43 purpose");
-        assertEquals(1, path[1] & 0x7FFFFFFF, "scheme version");
-        assertEquals(1234, path[2] & 0x7FFFFFFF, "realm id");
-        assertEquals(new AlgField(AlgField.ALG_SCHNORR, 0, 0).toIndex(), path[3] & 0x7FFFFFFF,
-                "the vault reads the algorithm from level 4");
-        assertEquals(Bip32KeyDerivator.mangle(loginXpub), path[4] & 0x7FFFFFFF,
-                "connector index discriminates the avatar link");
-
-        assertNotEquals(44, path[0] & 0x7FFFFFFF, "no BIP-44 purpose");
-        assertNotEquals(Protocol.NOSTR.coinType(), path[1] & 0x7FFFFFFF, "no nostr coin type");
-
-        // The vault rejects paths shorter than five levels and derives the key
-        // type from level 4, so a connector path must be executable as-is.
-        var vault = new Bip32KeyVault(TEST_MNEMONIC);
-        var result = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, path);
-        assertTrue(result.isOk(), "vault must accept the connector path, status=" + result.status());
-        assertNotNull(result.chainCode(), "an xpub needs the chain code");
-    }
-
-    @Test
     void primaryNostrPath_matchesTheStoredNostrEntry() {
         // The realm builds this path itself while createIdentity stores an entry
         // at the same place. Nothing else makes the two agree, and a drift in
@@ -446,5 +418,85 @@ class RealmTest {
         assertEquals("fa7851825be694a747ec9d93ea0b46be6f36a40af6ec3c5b2682d1dafe59dd12",
                 nostr.util.NostrUtil.bytesToHex(
                         java.util.Arrays.copyOfRange(compressed, 1, 33)));
+    }
+
+    // ── the handshake key comes from the store (F2) ───────────────────────
+
+    @Test
+    void primaryWithoutAStoredNostrKey_isRefused() {
+        var vault = new Bip32KeyVault(TEST_MNEMONIC);
+        var store = new InMemoryKeyMetaDataStore();
+        var alice = new Identity("alice@atlanta.com");
+        store.addIdentity(alice.name());
+        store.addKey(sshKeyEntry(alice.name()));
+        store.addKey(gpgKeyEntry(alice.name(), 0, "certification"));
+        // deliberately no nostr entry
+
+        var e = assertThrows(IllegalArgumentException.class, () ->
+                realm(store, vault, alice, new IdentitySelection(alice)));
+        assertTrue(e.getMessage().contains("has no Nostr key"), e.getMessage());
+        assertTrue(e.getMessage().contains(alice.name()), "the message must name the identity");
+    }
+
+    @Test
+    void theInvariantBindsThePrimaryOnly() {
+        var vault = new Bip32KeyVault(TEST_MNEMONIC);
+        var store = new InMemoryKeyMetaDataStore();
+        var alice = new Identity("alice@atlanta.com");
+        var bob = new Identity("bob@ssh.com");
+        populateStore(store, alice.name());
+        store.addIdentity(bob.name());
+        store.addKey(sshKeyEntry(bob.name()));   // bob has ssh only, no nostr
+
+        var realm = realm(store, vault, alice,
+                new IdentitySelection(alice),
+                new IdentitySelection(bob, Set.of(Protocol.SSH.coinType())));
+
+        assertEquals(2, realm.getHandler(Protocol.SSH.coinType()).keys().size());
+        assertEquals(List.of("alice@atlanta.com", "bob@ssh.com"), realm.identityNames());
+    }
+
+    @Test
+    void theInvariantIsCheckedAgainstTheUnfilteredStore() {
+        // A realm may serve no Nostr key at all and still sign its handshake
+        // with one — the filter governs what is served, never whether login
+        // is possible.
+        var vault = new Bip32KeyVault(TEST_MNEMONIC);
+        var store = new InMemoryKeyMetaDataStore();
+        var alice = new Identity("alice@atlanta.com");
+        populateStore(store, alice.name());
+
+        var realm = realm(store, vault, alice,
+                new IdentitySelection(alice, Set.of(Protocol.SSH.coinType())));
+
+        assertNull(realm.getHandler(Protocol.NOSTR.coinType()), "nostr is not served");
+        assertArrayEquals(IdentityPaths.nostr(alice), realm.primaryNostrPath(),
+                "yet the handshake key is still alice's nostr key");
+    }
+
+    // ── a failed attach leaves nothing behind (36.3.4 F5) ─────────────────
+
+    @Test
+    void failedAttach_leavesNoConnector() {
+        var vault = new Bip32KeyVault(TEST_MNEMONIC);
+        var store = new InMemoryKeyMetaDataStore();
+        var alice = new Identity("alice@atlanta.com");
+        populateStore(store, alice.name());
+        var realm = realm(store, vault, alice, new IdentitySelection(alice));
+
+        realm.setRelayClientFactory(descriptor -> {
+            throw new IllegalStateException("relay unavailable");
+        });
+
+        var descriptor = new AvatarDescriptor(
+                "ws://127.0.0.1:1", "xpub6CUGRUonZSQ4TWtTMmzXdrXDtyPWKiKbbqnWxx2qaGvxZ2x",
+                List.of("ssh"));
+
+        assertThrows(Exception.class, () -> realm.attach(descriptor));
+        assertTrue(realm.connectorIds().isEmpty(), "the reservation must be rolled back");
+        assertFalse(realm.hasConnectors());
+
+        // and the realm is still usable afterwards
+        assertNotNull(realm.getHandler(Protocol.SSH.coinType()));
     }
 }

@@ -38,6 +38,9 @@ public class KeyMasterController {
     private static final int H = 0x80000000;
 
     private final KeyMaster km;
+
+    /** Serializes realm id and default-name allocation; see createRealm. */
+    private final Object realmAllocation = new Object();
     private final SecureRandom realmIds = new SecureRandom();
     private ApprovalHandler approvalHandler;
     private Consumer<NostrTransport.ConnectionState> connectionStateListener;
@@ -71,42 +74,17 @@ public class KeyMasterController {
         KeyVault vault = km.vault;
         int mangledIdentity = Bip32KeyDerivator.mangle(identity);
 
-        // Build HD paths
-        HDPath sshHdPath = HDPath.m(
-                new ChildNumber(44, true),
-                new ChildNumber(Protocol.SSH.coinType(), true),
-                new ChildNumber(mangledIdentity, true),
-                new ChildNumber(new AlgField(AlgField.ALG_ED25519, 0, 0).toIndex(), true),
-                new ChildNumber(new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex(), true)
-        );
+        Identity id = new Identity(identity);
+        HDPath sshHdPath = IdentityPaths.hdPath(IdentityPaths.ssh(id));
 
         String[] roleNames = {"certification", "signing"};
         List<HDPath> gpgPaths = new ArrayList<>();
         for (int role = 0; role < roleNames.length; role++) {
-            gpgPaths.add(HDPath.m(
-                    new ChildNumber(44, true),
-                    new ChildNumber(Protocol.OPENPGP.coinType(), true),
-                    new ChildNumber(mangledIdentity, true),
-                    new ChildNumber(new AlgField(AlgField.ALG_ED25519, 0, role).toIndex(), true),
-                    new ChildNumber(new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex(), true)
-            ));
+            gpgPaths.add(IdentityPaths.hdPath(IdentityPaths.gpg(id, role)));
         }
 
-        HDPath nostrHdPath = HDPath.m(
-                new ChildNumber(44, true),
-                new ChildNumber(Protocol.NOSTR.coinType(), true),
-                new ChildNumber(mangledIdentity, true),
-                new ChildNumber(new AlgField(AlgField.ALG_SCHNORR, 0, 0).toIndex(), true),
-                new ChildNumber(new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex(), true)
-        );
-
-        HDPath mlsHdPath = HDPath.m(
-                new ChildNumber(44, true),
-                new ChildNumber(Protocol.MLS.coinType(), true),
-                new ChildNumber(mangledIdentity, true),
-                new ChildNumber(new AlgField(AlgField.ALG_ED25519, 0, AlgField.ROLE_SIGN).toIndex(), true),
-                new ChildNumber(new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex(), true)
-        );
+        HDPath nostrHdPath = IdentityPaths.hdPath(IdentityPaths.nostr(id));
+        HDPath mlsHdPath = IdentityPaths.hdPath(IdentityPaths.mlsSign(id));
 
         // Store via whichever metadata store is available
         KeyMetaDataStore keyStore = km.keyMetaDataStore;
@@ -135,14 +113,7 @@ public class KeyMasterController {
                         pgpName, pgpEmail, creationTime));
             }
             // Derive Nostr pubkey for the NostrKeyEntry
-            int identityIndex = mangledIdentity | H;
-            int[] nostrPath = {
-                    44 | H,
-                    Protocol.NOSTR.coinType() | H,
-                    identityIndex,
-                    new AlgField(AlgField.ALG_SCHNORR, 0, 0).toIndex() | H,
-                    new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex() | H
-            };
+            int[] nostrPath = IdentityPaths.nostr(id);
             byte[] compressed = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, nostrPath).data();
             String pubkeyHex = NostrUtil.bytesToHex(Arrays.copyOfRange(compressed, 1, 33));
             kvStore.put(new NostrKeyEntry(nostrHdPath, identity, pubkeyHex));
@@ -151,14 +122,7 @@ public class KeyMasterController {
         }
 
         // Derive pubkey from vault (no private key export)
-        int identityIndex = mangledIdentity | H;
-        int[] nostrPath = {
-                44 | H,
-                Protocol.NOSTR.coinType() | H,
-                identityIndex,
-                new AlgField(AlgField.ALG_SCHNORR, 0, 0).toIndex() | H,
-                new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex() | H
-        };
+        int[] nostrPath = IdentityPaths.nostr(id);
         byte[] compressedPub = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, nostrPath).data();
         String pubkey = NostrUtil.bytesToHex(Arrays.copyOfRange(compressedPub, 1, 33));
 
@@ -177,6 +141,16 @@ public class KeyMasterController {
     public void setApprovalHandler(ApprovalHandler handler) {
         this.approvalHandler = handler;
         km.realms.values().forEach(realm -> realm.setApprovalHandler(handler));
+    }
+
+    /**
+     * The approval handler in force, or {@code null} if every request is
+     * auto-approved.
+     *
+     * @return the current handler
+     */
+    public ApprovalHandler approvalHandler() {
+        return approvalHandler;
     }
 
     /**
@@ -199,22 +173,31 @@ public class KeyMasterController {
      */
     public Realm createRealm(String name, Identity primaryIdentity,
                              List<IdentitySelection> selections) {
-        int realmId = nextRealmId();
-        String realmName = (name == null || name.isBlank())
-                ? uniqueDefaultName(primaryIdentity)
-                : name;
+        Realm realm;
+        // Both the id and the default name are chosen by looking at the realms
+        // that exist, so choosing and registering has to be one step: two
+        // concurrent creates would otherwise pass the same check and the
+        // second would either take the first's name or, far less likely but
+        // far worse, its id — replacing a live realm in the map. Removal needs
+        // no lock, since it only ever frees an id or a name.
+        synchronized (realmAllocation) {
+            int realmId = nextRealmId();
+            String realmName = (name == null || name.isBlank())
+                    ? uniqueDefaultName(primaryIdentity)
+                    : name;
 
-        Realm realm = new Realm(realmId, realmName, selections, primaryIdentity,
-                km.vault, availableKeys(), approvalHandler);
-        if (connectionStateListener != null) {
-            realm.setConnectionStateListener(connectionStateListener);
+            realm = new Realm(realmId, realmName, selections, primaryIdentity,
+                    km.vault, availableKeys(), approvalHandler);
+            if (connectionStateListener != null) {
+                realm.setConnectionStateListener(connectionStateListener);
+            }
+            if (relayClientFactory != null) {
+                realm.setRelayClientFactory(relayClientFactory);
+            }
+            km.realms.put(realmId, realm);
         }
-        if (relayClientFactory != null) {
-            realm.setRelayClientFactory(relayClientFactory);
-        }
-        km.realms.put(realmId, realm);
         log.info("Realm created: id={} name={} identities={}",
-                realmId, realmName, realm.identityNames());
+                realm.id(), realm.name(), realm.identityNames());
         return realm;
     }
 
@@ -424,57 +407,6 @@ public class KeyMasterController {
     public void setRelayClientFactory(Function<AvatarDescriptor, RelayClient> factory) {
         this.relayClientFactory = factory;
         km.realms.values().forEach(realm -> realm.setRelayClientFactory(factory));
-    }
-
-    /**
-     * Restore an identity in the metadata store without creating keys.
-     * Used when restoring from a QR-scanned backup.
-     *
-     * @param identity identity identifier (e.g. "alice@atlanta.com")
-     */
-    public void restoreIdentity(String identity) {
-        KeyMetaDataStore keyStore = km.keyMetaDataStore;
-        if (keyStore == null) {
-            throw new IllegalStateException("Metadata store is required for restoreIdentity");
-        }
-        keyStore.addIdentity(identity);
-        log.info("Identity restored: {}", identity);
-    }
-
-    /**
-     * Restore GPG key metadata entries (certification + signing) for an identity.
-     * Used when restoring from a QR-scanned backup with known creation time.
-     *
-     * @param identity     identity identifier
-     * @param pgpName      user's name for OpenPGP user ID
-     * @param pgpEmail     user's email for OpenPGP user ID
-     * @param creationTime key creation time (epoch seconds)
-     */
-    public void restoreGpgKeys(String identity, String pgpName, String pgpEmail, long creationTime) {
-        KeyMetaDataStore keyStore = km.keyMetaDataStore;
-        if (keyStore == null) {
-            throw new IllegalStateException("Metadata store is required for restoreGpgKeys");
-        }
-        int mangledIdentity = Bip32KeyDerivator.mangle(identity);
-
-        String[] roleNames = {"certification", "signing"};
-        for (int role = 0; role < roleNames.length; role++) {
-            HDPath gpgHdPath = HDPath.m(
-                    new ChildNumber(44, true),
-                    new ChildNumber(Protocol.OPENPGP.coinType(), true),
-                    new ChildNumber(mangledIdentity, true),
-                    new ChildNumber(new AlgField(AlgField.ALG_ED25519, 0, role).toIndex(), true),
-                    new ChildNumber(new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex(), true)
-            );
-            keyStore.addKey(new KeyEntry(gpgHdPath, Map.of(
-                    "label", identity + " / " + roleNames[role],
-                    "key_type", "ed25519",
-                    "identity", identity,
-                    "creation_time", String.valueOf(creationTime),
-                    "pgp_name", pgpName,
-                    "pgp_email", pgpEmail)));
-        }
-        log.info("GPG keys restored for identity: {}", identity);
     }
 
     /**

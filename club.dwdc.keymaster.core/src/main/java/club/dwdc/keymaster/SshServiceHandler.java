@@ -95,15 +95,7 @@ public class SshServiceHandler extends AbstractServiceHandler {
      * @return authorized_keys line
      */
     public static String getAuthorizedKeysLine(KeyVault vault, String identity) {
-        int H = 0x80000000;
-        int identityIndex = Bip32KeyDerivator.mangle(identity) | H;
-        int[] sshPath = {
-                44 | H,
-                Protocol.SSH.coinType() | H,
-                identityIndex,
-                new AlgField(AlgField.ALG_ED25519, 0, 0).toIndex() | H,
-                new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex() | H
-        };
+        int[] sshPath = IdentityPaths.ssh(new Identity(identity));
 
         VaultResult pubResult = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, sshPath);
         if (!pubResult.isOk()) {

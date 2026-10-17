@@ -404,27 +404,16 @@ public class NostrServiceHandler extends AbstractServiceHandler {
      * {@code m/44'/1242'/mangle'/AlgField(ED25519,0,ROLE_SIGN)'/ConfigField(NONE,0)'}
      */
     private static int[] buildMlsSignPath(int mangledIdentity) {
-        return new int[]{
-                44 | H,
-                Protocol.MLS.coinType() | H,
-                mangledIdentity | H,
-                new AlgField(AlgField.ALG_ED25519, 0, AlgField.ROLE_SIGN).toIndex() | H,
-                new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex() | H
-        };
+        return IdentityPaths.mlsSignFor(mangledIdentity);
     }
 
     /**
-     * Build an MLS HPKE key path at the given index from a pre-computed mangled identity.
-     * {@code m/44'/1242'/mangle'/AlgField(ED25519,0,ROLE_HPKE)'/ConfigField(NONE,index)'}
+     * Build an MLS HPKE key path at the given index from a pre-computed mangled
+     * identity. The index is a runtime sequence, so these paths cannot come
+     * from the metadata store.
      */
     private static int[] buildHpkePath(int mangledIdentity, int index) {
-        return new int[]{
-                44 | H,
-                Protocol.MLS.coinType() | H,
-                mangledIdentity | H,
-                new AlgField(AlgField.ALG_ED25519, 0, AlgField.ROLE_HPKE).toIndex() | H,
-                new ConfigField(ConfigField.CSPRNG_NONE, index).toIndex() | H
-        };
+        return IdentityPaths.mlsHpkeFor(mangledIdentity, index);
     }
 
     /**

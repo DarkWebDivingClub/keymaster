@@ -138,13 +138,17 @@ public class Realm {
         this.vault = vault;
         this.approvalHandler = approvalHandler;
 
-        this.primaryNostrPath = new int[]{
-                44 | H,
-                Protocol.NOSTR.coinType() | H,
-                primaryIdentity.mangled() | H,
-                new AlgField(AlgField.ALG_SCHNORR, 0, 0).toIndex() | H,
-                new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex() | H
-        };
+        // F2: the handshake key comes from the store, not from arithmetic.
+        // A primary identity always has a Nostr key — that key signs the
+        // handshake — and createIdentity, the only live writer, always records
+        // it. Taking the path from the entry removes a construction site and
+        // makes a missing login key a loud error here instead of a failed
+        // attach later. Checked against the *unfiltered* key list, because a
+        // realm may legitimately serve no Nostr key while still signing with
+        // one.
+        this.primaryNostrPath = (availableKeys == null || availableKeys.isEmpty())
+                ? IdentityPaths.nostr(primaryIdentity)
+                : storedNostrPath(availableKeys, primaryIdentity);
 
         this.handlers = buildHandlers(availableKeys, selections);
     }
@@ -157,6 +161,23 @@ public class Realm {
     Realm(int id, String name, Identity primaryIdentity, KeyVault vault) {
         this(id, name, List.of(new IdentitySelection(primaryIdentity)),
                 primaryIdentity, vault, List.of(), null);
+    }
+
+    /**
+     * The primary identity's stored Nostr key path.
+     *
+     * @throws IllegalArgumentException if the store holds no Nostr key for it —
+     *         such a realm could not sign its own handshake
+     */
+    private static int[] storedNostrPath(List<KeyEntry> availableKeys, Identity primary) {
+        int mangled = primary.mangled();
+        for (KeyEntry key : availableKeys) {
+            if (key.coinType() == Protocol.NOSTR.coinType() && key.identity() == mangled) {
+                return key.toVaultPath();
+            }
+        }
+        throw new IllegalArgumentException("primary identity " + primary.name()
+                + " has no Nostr key — it cannot sign the handshake");
     }
 
     public int id() {
@@ -346,7 +367,7 @@ public class Realm {
         }
 
         try {
-            int[] connectorPath = connectorPath(id, avatar.loginXpub());
+            int[] connectorPath = RealmPaths.connector(id, avatar.loginXpub());
 
             VaultResult connectorKey = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, connectorPath);
             if (!connectorKey.isOk()) {
@@ -380,29 +401,6 @@ public class Realm {
             }
             throw e;
         }
-    }
-
-    /**
-     * The connection key path for one avatar link:
-     * {@code m/mangle("keymaster")'/scheme'/realmId'/alg'/mangle(login_xpub)'}.
-     *
-     * <p>All five levels hardened; nothing above the exported xpub is visible
-     * to the avatar. See {@code doc/key-derivation.md}.
-     *
-     * <p>The algorithm level is not decoration: {@link KeyVault#execute}
-     * rejects paths shorter than five levels and reads the algorithm from level
-     * 4, so every path handed to the vault must declare it there. These are
-     * Schnorr keys — Schnorr signatures for channel events, secp256k1 ECDH for
-     * NIP-44 — hence {@link AlgField#ALG_SCHNORR}.
-     */
-    static int[] connectorPath(int realmId, String avatarLoginXpub) {
-        return new int[]{
-                KM_PURPOSE | H,
-                KM_SCHEME | H,
-                realmId | H,
-                new AlgField(AlgField.ALG_SCHNORR, 0, 0).toIndex() | H,
-                Bip32KeyDerivator.mangle(avatarLoginXpub) | H
-        };
     }
 
     /** Close one connector. */

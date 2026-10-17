@@ -190,7 +190,9 @@ public class DaemonController implements DaemonServer.RequestHandler {
      *
      * @return the selections, or {@code null} if an entry is malformed
      */
-    private List<IdentitySelection> parseSelections(JsonObject params, Identity primary) {
+    // Package-private so the parse can be asserted directly; the RPC
+    // surface only reveals whether it returned null.
+    List<IdentitySelection> parseSelections(JsonObject params, Identity primary) {
         List<IdentitySelection> selections = new ArrayList<>();
         selections.add(new IdentitySelection(primary));
 
@@ -258,7 +260,9 @@ public class DaemonController implements DaemonServer.RequestHandler {
      *               plus an interactive prompt. Applies to every realm, since
      *               approval policy is controller-wide here
      */
-    private KeyMasterController controller(String policy) {
+    // Package-private for the same reason: the policy default is a
+    // property of the controller, not of any RPC response.
+    KeyMasterController controller(String policy) {
         boolean fresh = currentCtrl == null;
         if (fresh) {
             KeyVault vault = new Bip32KeyVault(seedStore.getMnemonic(), seedStore.getPassphrase());
