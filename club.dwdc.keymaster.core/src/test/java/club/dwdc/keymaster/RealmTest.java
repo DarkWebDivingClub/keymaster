@@ -388,6 +388,26 @@ class RealmTest {
     }
 
     @Test
+    void primaryNostrPath_matchesTheStoredNostrEntry() {
+        // The realm builds this path itself while createIdentity stores an entry
+        // at the same place. Nothing else makes the two agree, and a drift in
+        // the alg or config level would be a wrong-key bug no other test sees.
+        var vault = new Bip32KeyVault(TEST_MNEMONIC);
+        var store = new InMemoryKeyMetaDataStore();
+        populateStore(store, "alice@atlanta.com");
+        var alice = new Identity("alice@atlanta.com");
+        var realm = realm(store, vault, alice, new IdentitySelection(alice));
+
+        KeyEntry stored = store.allKeys().stream()
+                .filter(k -> k.coinType() == Protocol.NOSTR.coinType()
+                        && k.identity() == alice.mangled())
+                .findFirst()
+                .orElseThrow();
+
+        assertArrayEquals(stored.toVaultPath(), realm.primaryNostrPath());
+    }
+
+    @Test
     void primaryNostrPath_isTheIdentityNostrKey() {
         var vault = new Bip32KeyVault(TEST_MNEMONIC);
         var store = new InMemoryKeyMetaDataStore();

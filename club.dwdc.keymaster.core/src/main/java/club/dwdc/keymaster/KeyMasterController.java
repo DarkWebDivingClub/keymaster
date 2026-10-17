@@ -235,7 +235,18 @@ public class KeyMasterController {
     public Realm.AttachResult attachToRealm(int realmId, AvatarDescriptor descriptor)
             throws Exception {
         Realm realm = requireRealm(realmId);
-        return realm.attach(descriptor);
+        Realm.AttachResult result = realm.attach(descriptor);
+
+        // A concurrent detach can remove the realm between the lookup above and
+        // the attach completing, which would leave a live connector on a realm
+        // nothing can reach. Detect it and undo rather than leak.
+        if (km.realms.get(realmId) != realm) {
+            log.warn("Realm {} was removed while attaching; undoing connector {}",
+                    realmId, result.connectorId());
+            realm.detach(result.connectorId());
+            throw new IllegalStateException("realm " + realmId + " was detached while attaching");
+        }
+        return result;
     }
 
     /**

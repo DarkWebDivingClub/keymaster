@@ -371,6 +371,13 @@ public class Realm {
             return new AttachResult(connectorId, attachEventId);
         } catch (Exception e) {
             connectors.remove(connectorId);
+            // connect() may have opened a socket before failing, so closing is
+            // not optional: dropping the reference would leak the relay client.
+            try {
+                connector.disconnect();
+            } catch (Exception suppressed) {
+                e.addSuppressed(suppressed);
+            }
             throw e;
         }
     }
