@@ -21,6 +21,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -397,6 +398,22 @@ public class KeyMasterController {
     public void setConnectionStateListener(int realmId,
                                            Consumer<NostrTransport.ConnectionState> listener) {
         requireRealm(realmId).setConnectionStateListener(listener);
+    }
+
+    /**
+     * Set a listener for one realm that is told which connector changed state.
+     *
+     * <p>What a multi-avatar UI needs: with two connectors on one realm, the
+     * realm-wide listener above fires for both and cannot distinguish them, so
+     * a row per avatar cannot show its own dot. The id is the one
+     * {@link Realm.AttachResult#connectorId()} returned.
+     *
+     * @param realmId  the realm to listen to
+     * @param listener receives (connector id, state), or {@code null} to clear
+     */
+    public void setConnectorStateListener(int realmId,
+            BiConsumer<Integer, NostrTransport.ConnectionState> listener) {
+        requireRealm(realmId).setConnectorStateListener(listener);
     }
 
     /**

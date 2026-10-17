@@ -19,6 +19,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Predicate;
@@ -81,6 +82,7 @@ public class Realm {
     private final Map<Integer, NipxxConnector> connectors = new ConcurrentHashMap<>();
 
     private volatile Consumer<NostrTransport.ConnectionState> connectionStateListener;
+    private volatile BiConsumer<Integer, NostrTransport.ConnectionState> connectorStateListener;
     private volatile Function<AvatarDescriptor, RelayClient> relayClientFactory;
 
     /**
@@ -379,9 +381,7 @@ public class Realm {
                     .serializePubB58(BitcoinNetwork.MAINNET);
 
             connector.setRealmVault(vault, connectorPath, realmXpub);
-            if (connectionStateListener != null) {
-                connector.setConnectionStateListener(connectionStateListener);
-            }
+            connector.setConnectionStateListener(stateForwarder(connectorId));
             if (relayClientFactory != null) {
                 connector.setRelayClientFactory(relayClientFactory);
             }
@@ -435,10 +435,55 @@ public class Realm {
         return !connectors.isEmpty();
     }
 
-    /** Set the relay connection state listener for this realm's connectors. */
+    /**
+     * The listener a connector gets: always a forwarder, never a caller's
+     * listener directly. It closes over the connector id — the one thing a
+     * connector's own callback cannot be told apart by — and reads both
+     * listener fields at call time, so either can be installed after the
+     * connector exists.
+     */
+    Consumer<NostrTransport.ConnectionState> stateForwarder(int connectorId) {
+        return state -> {
+            var perConnector = connectorStateListener;
+            if (perConnector != null) {
+                perConnector.accept(connectorId, state);
+            }
+            var perRealm = connectionStateListener;
+            if (perRealm != null) {
+                perRealm.accept(state);
+            }
+        };
+    }
+
+    /**
+     * Set the relay connection state listener for this realm's connectors.
+     *
+     * <p>Every connector reports through this, so with more than one connector
+     * the callback cannot say which one changed — use
+     * {@link #setConnectorStateListener(BiConsumer)} for that. Both may be set
+     * at once; both are read at call time, so either can be installed after
+     * connectors already exist.
+     *
+     * @param listener state consumer, or {@code null} to clear
+     */
     public void setConnectionStateListener(Consumer<NostrTransport.ConnectionState> listener) {
         this.connectionStateListener = listener;
-        connectors.values().forEach(c -> c.setConnectionStateListener(listener));
+    }
+
+    /**
+     * Set a listener that is told <em>which</em> connector changed state.
+     *
+     * <p>A realm with two avatars has two independent relay connections: one
+     * can be retrying while the other serves, and a UI that shows a single
+     * state for the realm cannot express that. The connector id passed here is
+     * the same id {@link AttachResult#connectorId()} returned at attach, so a
+     * caller can map it to the avatar it showed the user.
+     *
+     * @param listener receives (connector id, state), or {@code null} to clear
+     */
+    public void setConnectorStateListener(
+            BiConsumer<Integer, NostrTransport.ConnectionState> listener) {
+        this.connectorStateListener = listener;
     }
 
     /** Set the relay client factory used by connectors created from now on. */

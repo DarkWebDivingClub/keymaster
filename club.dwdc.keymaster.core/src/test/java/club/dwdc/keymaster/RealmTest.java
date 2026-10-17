@@ -499,4 +499,59 @@ class RealmTest {
         // and the realm is still usable afterwards
         assertNotNull(realm.getHandler(Protocol.SSH.coinType()));
     }
+
+    // ── per-connector state (36.3.6) ──────────────────────────────────────
+
+    @Test
+    void theForwarderNamesTheConnectorAndStillTellsTheRealm() {
+        var realm = singleIdentityRealm();
+        var perConnector = new java.util.ArrayList<String>();
+        var perRealm = new java.util.ArrayList<NostrTransport.ConnectionState>();
+        realm.setConnectorStateListener((id, state) -> perConnector.add(id + ":" + state));
+        realm.setConnectionStateListener(perRealm::add);
+
+        realm.stateForwarder(111).accept(NostrTransport.ConnectionState.CONNECTED);
+        realm.stateForwarder(222).accept(NostrTransport.ConnectionState.RETRYING);
+
+        assertEquals(List.of("111:CONNECTED", "222:RETRYING"), perConnector,
+                "a row per avatar needs the id, not just the state");
+        assertEquals(List.of(NostrTransport.ConnectionState.CONNECTED,
+                NostrTransport.ConnectionState.RETRYING), perRealm,
+                "the realm-wide listener is unaffected");
+    }
+
+    @Test
+    void aListenerInstalledAfterAttachStillReceives() {
+        // The service attaches first and wires the UI afterwards, so the
+        // forwarder must read the field at call time, not capture it.
+        var realm = singleIdentityRealm();
+        var forwarder = realm.stateForwarder(7);
+        forwarder.accept(NostrTransport.ConnectionState.CONNECTED);   // nobody listening
+
+        var seen = new java.util.ArrayList<String>();
+        realm.setConnectorStateListener((id, state) -> seen.add(id + ":" + state));
+        forwarder.accept(NostrTransport.ConnectionState.DISCONNECTED);
+
+        assertEquals(List.of("7:DISCONNECTED"), seen);
+    }
+
+    @Test
+    void noListenerIsNotAnError() {
+        var realm = singleIdentityRealm();
+        assertDoesNotThrow(() ->
+                realm.stateForwarder(1).accept(NostrTransport.ConnectionState.RETRYING));
+
+        realm.setConnectorStateListener((id, state) -> { });
+        realm.setConnectorStateListener(null);
+        assertDoesNotThrow(() ->
+                realm.stateForwarder(1).accept(NostrTransport.ConnectionState.CONNECTED));
+    }
+
+    private Realm singleIdentityRealm() {
+        var store = new InMemoryKeyMetaDataStore();
+        var alice = new Identity("alice@atlanta.com");
+        populateStore(store, alice.name());
+        return realm(store, new Bip32KeyVault(TEST_MNEMONIC), alice,
+                new IdentitySelection(alice));
+    }
 }
