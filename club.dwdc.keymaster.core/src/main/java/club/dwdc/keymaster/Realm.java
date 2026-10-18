@@ -23,6 +23,7 @@ import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Predicate;
+import java.util.stream.Collectors;
 
 /**
  * Realm — a named identity scope that owns its avatar connections.
@@ -207,7 +208,12 @@ public class Realm {
 
     /** Clear-text identity names, for the UI, the notification and logs. */
     public List<String> identityNames() {
-        return identities.values().stream().map(Identity::name).sorted().toList();
+        // Collectors.toList() rather than Stream.toList(): the latter is Java
+        // 16 and Android only gained it in API 35, so on anything older this
+        // method throws NoSuchMethodError. Found on an Android 13 phone after
+        // the whole mission had been tested on an Android 16 one.
+        return identities.values().stream().map(Identity::name).sorted()
+                .collect(Collectors.toList());
     }
 
     /**
