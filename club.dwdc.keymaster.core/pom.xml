@@ -6,7 +6,7 @@
     <parent>
         <groupId>club.dwdc</groupId>
         <artifactId>club.dwdc.keymaster</artifactId>
-        <version>0.6.1</version>
+        <version>0.7.0</version>
     </parent>
 
     <artifactId>club.dwdc.keymaster.core</artifactId>
