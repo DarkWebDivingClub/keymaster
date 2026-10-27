@@ -22,6 +22,9 @@ described in [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md).
 - **JDK 21.** Required, and it must be explicit: JDK 25 is the default
   `java` on current Ubuntu and the build targets 21.
 - Maven 3.9+
+- **Gradle on your PATH**, for step 1 of the build order — bitcoinj's
+  upstream `.gitignore` excludes the wrapper, so a fresh clone has no
+  `./gradlew`.
 
 ```sh
 export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
@@ -36,7 +39,7 @@ this order — each step installs into `~/.m2`:
 | Order | Repo | Command | Documented in |
 |---|---|---|---|
 | 0 | [nostr-java](https://github.com/DarkWebDivingClub/nostr-java) (fork) | `mvn install -DskipTests` | its `FORK.md` |
-| 1 | [bitcoinj](https://github.com/DarkWebDivingClub/bitcoinj) (fork) | `./gradlew publishToMavenLocal` | its `FORK.md` |
+| 1 | [bitcoinj](https://github.com/DarkWebDivingClub/bitcoinj) (fork) | `gradle publishToMavenLocal` | its `FORK.md` |
 | 2 | [keyvault](https://github.com/DarkWebDivingClub/keyvault) | `mvn install` | its `README.md` |
 | 3 | this repo | `mvn install` | here |
 
