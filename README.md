@@ -40,7 +40,7 @@ this order — each step installs into `~/.m2`:
 | 3 | this repo | `mvn install` | here |
 
 ```sh
-git clone git@github.com:DarkWebDivingClub/keymaster.git
+git clone https://github.com/DarkWebDivingClub/keymaster.git
 cd keymaster
 mvn install
 ```
