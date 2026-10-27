@@ -35,9 +35,17 @@ this order — each step installs into `~/.m2`:
 
 | Order | Repo | Command | Documented in |
 |---|---|---|---|
+| 0 | [nostr-java](https://github.com/FlowRateHQ/nostr-java) (fork) | `mvn install -DskipTests` | — (mission 46.3) |
 | 1 | [bitcoinj](https://github.com/dukeh3/bitcoinj) (fork) | `./gradlew publishToMavenLocal` | its `FORK.md` |
 | 2 | [keyvault](https://github.com/DarkWebDivingClub/keyvault) | `mvn install` | its `README.md` |
 | 3 | this repo | `mvn install` | here |
+
+Step 0 is required and easy to miss: `keyvault.nostr` needs
+`nostr.id.IIdentity`, which is in no `xyz.tcheeric:nostr-java-identity`
+release on Maven Central — only in the fork. The upstream coordinate
+resolves, so skipping step 0 fails as a missing class rather than a
+missing dependency. The fork is not versioned separately yet; keymaster
+mission 46.3 fixes that.
 
 ```sh
 git clone https://github.com/DarkWebDivingClub/keymaster.git
