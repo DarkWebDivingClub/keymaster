@@ -1,6 +1,10 @@
 package club.dwdc.keymaster.desktop;
 
+import club.dwdc.keymaster.Identity;
+import club.dwdc.keymaster.IdentityPaths;
 import club.dwdc.keymaster.KeyEntry;
+import club.dwdc.keymaster.X509CertSlot;
+import club.dwdc.keymaster.X509Role;
 import club.dwdc.keyvault.core.AlgField;
 import club.dwdc.keyvault.core.Bip32KeyDerivator;
 import club.dwdc.keyvault.core.Protocol;
@@ -176,6 +180,20 @@ class FileKeyMetaDataStoreTest {
         // Path should be serialized as standard BIP-32 string with apostrophe notation
         assertTrue(json.contains("m/44'/"), "path starts with m/44'/ in BIP-32 format");
         assertTrue(json.contains("1238'"), "SSH coin type in path");
+    }
+
+    @Test
+    void x509CertSurvivesReload() throws Exception {
+        HDPath path = IdentityPaths.hdPath(
+                IdentityPaths.x509(new Identity("alice@atlanta.com"), X509Role.TLS_CLIENT));
+        byte[] der = {0x30, (byte) 0x82, 0x01, 0x00, 0x7F, (byte) 0xFF};
+
+        new FileKeyMetaDataStore(tempDir).addKey(X509CertSlot.with(
+                new KeyEntry(path, Map.of("identity", "alice@atlanta.com")), der));
+
+        FileKeyMetaDataStore reloaded = new FileKeyMetaDataStore(tempDir);
+        assertArrayEquals(der, X509CertSlot.get(reloaded.getKey(path)).orElseThrow());
+        assertTrue(Files.readString(tempDir.resolve("key-metadata.json")).contains("\"x509_cert\""));
     }
 
     @Test
