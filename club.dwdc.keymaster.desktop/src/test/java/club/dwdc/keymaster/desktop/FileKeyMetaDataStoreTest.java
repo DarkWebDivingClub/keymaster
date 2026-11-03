@@ -197,6 +197,29 @@ class FileKeyMetaDataStoreTest {
     }
 
     @Test
+    void pathStringMatchesWhatTheStoreWrites() throws Exception {
+        // x509.sign matches paths by exact string against IdentityPaths.pathString,
+        // which must be the form key-metadata.json holds.
+        int[] path = IdentityPaths.x509(new Identity("alice@atlanta.com"), X509Role.TLS_CLIENT);
+        new FileKeyMetaDataStore(tempDir).addKey(
+                new KeyEntry(IdentityPaths.hdPath(path), Map.of("identity", "alice@atlanta.com")));
+
+        String json = Files.readString(tempDir.resolve("key-metadata.json"));
+        String expected = "m/44'/1240'/1955269225'/196866'/0'";
+        assertEquals(expected, IdentityPaths.pathString(path));
+        assertTrue(json.contains("\"path\": \"" + expected + "\"")
+                        || json.contains("\"path\":\"" + expected + "\""),
+                json);
+
+        // And through the adapter directly, for a path with a non-hardened level.
+        int[] mixed = {44 | 0x80000000, 7, 0};
+        java.io.StringWriter out = new java.io.StringWriter();
+        new FileKeyMetaDataStore.HDPathTypeAdapter().write(
+                new com.google.gson.stream.JsonWriter(out), IdentityPaths.hdPath(mixed));
+        assertEquals("\"" + IdentityPaths.pathString(mixed) + "\"", out.toString());
+    }
+
+    @Test
     void filePermissions0600() throws Exception {
         FileKeyMetaDataStore store = new FileKeyMetaDataStore(tempDir);
         store.addKey(new KeyEntry(sshPath("alice"), Map.of()));
