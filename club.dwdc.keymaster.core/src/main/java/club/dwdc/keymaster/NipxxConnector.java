@@ -174,6 +174,7 @@ public class NipxxConnector implements Connector {
             case "ssh" -> Protocol.SSH.coinType();
             case "gpg" -> Protocol.OPENPGP.coinType();
             case "nostr" -> Protocol.NOSTR.coinType();
+            case "x509" -> Protocol.X509.coinType();
             default -> null;
         };
     }
@@ -181,10 +182,11 @@ public class NipxxConnector implements Connector {
     /**
      * Map a protocol coin type to its service type string.
      */
-    private static String coinTypeToServiceType(int coinType) {
+    static String coinTypeToServiceType(int coinType) {
         if (coinType == Protocol.SSH.coinType()) return "ssh";
         if (coinType == Protocol.OPENPGP.coinType()) return "gpg";
         if (coinType == Protocol.NOSTR.coinType()) return "nostr";
+        if (coinType == Protocol.X509.coinType()) return "x509";
         return null;
     }
 }

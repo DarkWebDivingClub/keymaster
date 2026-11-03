@@ -130,6 +130,25 @@ public final class IdentityPaths {
         return HDPath.m(levels);
     }
 
+    /**
+     * A vault path as the string {@code key-metadata.json} stores it, e.g.
+     * {@code m/44'/1240'/1955269225'/196866'/0'}: {@code "m"}, then
+     * {@code /index} with {@code '} when hardened. Must stay identical to the
+     * desktop store's {@code HDPathTypeAdapter}; {@code FileKeyMetaDataStoreTest}
+     * pins the two together. The X.509 service matches request paths against
+     * this string exactly — no parsing.
+     */
+    public static String pathString(int[] path) {
+        StringBuilder sb = new StringBuilder("m");
+        for (int level : path) {
+            sb.append('/').append(level & ~H);
+            if ((level & H) != 0) {
+                sb.append('\'');
+            }
+        }
+        return sb.toString();
+    }
+
     private static int[] path(Protocol protocol, Identity identity, int algIndex) {
         return new int[]{
                 44 | H,

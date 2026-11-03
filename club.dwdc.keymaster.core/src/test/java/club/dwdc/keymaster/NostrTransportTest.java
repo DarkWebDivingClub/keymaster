@@ -176,6 +176,37 @@ class NostrTransportTest {
         assertEquals(1, d.eventsSent(), "one response event");
     }
 
+    @Test
+    void x509RequestFromTheGpgAvatarKeyIsDropped() throws Exception {
+        // 37.1.3: encrypted to KM's x509 channel key, sent from the avatar's gpg key.
+        Delivery dropped = deliverServiceRequest(List.of("gpg", "x509"), "gpg", "x509");
+        assertTrue(dropped.dispatched().isEmpty());
+        assertEquals(0, dropped.eventsSent());
+
+        Delivery control = deliverServiceRequest(List.of("gpg", "x509"), "x509", "x509");
+        assertEquals(List.of("x509"), control.dispatched());
+        assertEquals(1, control.eventsSent());
+    }
+
+    // ── x509 channel golden value (Rust side) ─────────────────────────────
+
+    @Test
+    void x509ChannelGolden() {
+        byte[] seed = MnemonicCode.toSeed(List.of(TEST_MNEMONIC.split(" ")), "");
+        assertEquals("5eb00bbddcf069084889a8ab9155568165f5c453ccb85e70811aaed6f6da5fc1"
+                + "9a5ac40b389cd370d086206dec8aa6c43daea6690f20ad3d8d48b2d2ce9e38e4",
+                NostrUtil.bytesToHex(seed));
+
+        String xpub = HDKeyDerivation.deriveChildKey(
+                        HDKeyDerivation.createMasterPrivateKey(seed), new ChildNumber(0))
+                .serializePubB58(BitcoinNetwork.MAINNET);
+        assertEquals("xpub68jrRzQfUmwSaf5Y37Yd5uwfnMRxiR14M3HBonDr91GB7GKEh7R9Mvu2UeCtbASfX"
+                + "Z9FdNo9FwFx6a37HNXUDiXVQFXuadXmevRBa3y7rL8", xpub);
+
+        assertEquals("09d8987776ec7b88ac17e00d02e887fc1a99b9b36741a915537b4951b6ecd8b5",
+                NostrTransport.deriveServicePubkeyFromXpub(xpub, Bip32KeyDerivator.mangle("x509"), 0));
+    }
+
     /** What happened to one delivered event. */
     record Delivery(List<String> dispatched, long eventsSent) {}
 

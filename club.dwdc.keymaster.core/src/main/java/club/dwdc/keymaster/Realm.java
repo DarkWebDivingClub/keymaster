@@ -104,6 +104,20 @@ public class Realm {
     public Realm(int id, String name, List<IdentitySelection> selections,
                  Identity primaryIdentity, KeyVault vault,
                  List<KeyEntry> availableKeys, ApprovalHandler approvalHandler) {
+        this(id, name, selections, primaryIdentity, vault, availableKeys, approvalHandler, null);
+    }
+
+    /**
+     * As above, with the metadata store the X.509 handler keeps certificates
+     * in. {@code null} (Android, until 37.2) serves X.509 keys without
+     * certificates and refuses {@code x509.import}.
+     *
+     * @param keyStore metadata store for certificate slots, or {@code null}
+     */
+    public Realm(int id, String name, List<IdentitySelection> selections,
+                 Identity primaryIdentity, KeyVault vault,
+                 List<KeyEntry> availableKeys, ApprovalHandler approvalHandler,
+                 KeyMetaDataStore keyStore) {
 
         if (selections == null || selections.isEmpty()) {
             throw new IllegalArgumentException("realm needs at least one identity selection");
@@ -153,7 +167,7 @@ public class Realm {
                 ? IdentityPaths.nostr(primaryIdentity)
                 : storedNostrPath(availableKeys, primaryIdentity);
 
-        this.handlers = buildHandlers(availableKeys, selections);
+        this.handlers = buildHandlers(availableKeys, selections, keyStore);
     }
 
     /**
@@ -242,7 +256,8 @@ public class Realm {
      * here rather than rebuilt per request.
      */
     private Map<Integer, AbstractServiceHandler> buildHandlers(
-            List<KeyEntry> availableKeys, List<IdentitySelection> selections) {
+            List<KeyEntry> availableKeys, List<IdentitySelection> selections,
+            KeyMetaDataStore keyStore) {
 
         Map<Integer, AbstractServiceHandler> built = new ConcurrentHashMap<>();
         if (availableKeys == null || availableKeys.isEmpty()) {
@@ -269,6 +284,10 @@ public class Realm {
         register(built, Protocol.NOSTR.coinType(),
                 new NostrServiceHandler(vault, keysOf(byCoinType, Protocol.NOSTR),
                         keysOf(byCoinType, Protocol.MLS)));
+        // X.509 keys are computed from the identities, not read from the store
+        // (doc/x509.md); the store only holds their certificates.
+        register(built, Protocol.X509.coinType(),
+                new X509ServiceHandler(vault, x509Identities(selections), keyStore));
 
         log.info("Realm {} ({}) resolved {} handler(s) for {}",
                 id, name, built.size(), identityNames());
@@ -287,6 +306,19 @@ public class Realm {
 
     private static List<KeyEntry> keysOf(Map<Integer, List<KeyEntry>> byCoinType, Protocol protocol) {
         return byCoinType.getOrDefault(protocol.coinType(), List.of());
+    }
+
+    /** Identities whose selection covers X.509: all protocols, or 1240 named. */
+    private static List<Identity> x509Identities(List<IdentitySelection> selections) {
+        List<Identity> result = new ArrayList<>();
+        for (IdentitySelection selection : selections) {
+            boolean covers = selection.coinTypes().isEmpty()
+                    || selection.coinTypes().contains(Protocol.X509.coinType());
+            if (covers && !result.contains(selection.identity())) {
+                result.add(selection.identity());
+            }
+        }
+        return result;
     }
 
     /**
@@ -335,6 +367,7 @@ public class Realm {
         if (coinType == Protocol.SSH.coinType()) return "ssh";
         if (coinType == Protocol.OPENPGP.coinType()) return "gpg";
         if (coinType == Protocol.NOSTR.coinType()) return "nostr";
+        if (coinType == Protocol.X509.coinType()) return "x509";
         return null;
     }
 
