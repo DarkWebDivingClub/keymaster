@@ -191,7 +191,7 @@ Response:
       "objectId": "object_01J...",
       "class": "CKO_CERTIFICATE",
       "ckaId": "base64-encoded stable object identifier",
-      "label": "duke_h3@dwdc.club"
+      "label": "duke_h3@dwdc.club tls-client"
     }
   ]
 }
@@ -204,6 +204,10 @@ Fields:
   certificate, public-key, and private-key-reference objects.
 - `class` identifies a certificate, public-key, or private-key-reference
   object.
+- `label` is generated, never stored: `<identity> <role-token>` (e.g.
+  `alice@atlanta.com tls-client`), identical on the certificate, public-key
+  and private-key-reference objects of one key. Role tokens come from
+  `X509Role`.
 
 KeyMaster applies authorization before returning object summaries. A filter is
 a constrained structured query, not an arbitrary expression.
@@ -231,7 +235,7 @@ Certificate response:
   "objectId": "object_01J...",
   "class": "CKO_CERTIFICATE",
   "ckaId": "base64-encoded stable object identifier",
-  "label": "duke_h3@dwdc.club",
+  "label": "duke_h3@dwdc.club tls-client",
   "certificateType": "CKC_X_509",
   "value": "base64-encoded DER X.509 certificate"
 }
@@ -244,7 +248,7 @@ Public-key response:
   "objectId": "object_01K...",
   "class": "CKO_PUBLIC_KEY",
   "ckaId": "base64-encoded stable object identifier",
-  "label": "duke_h3@dwdc.club",
+  "label": "duke_h3@dwdc.club tls-client",
   "keyType": "CKK_EC",
   "subjectPublicKeyInfo": "base64-encoded DER SubjectPublicKeyInfo"
 }
@@ -257,7 +261,7 @@ Private-key-reference response:
   "objectId": "object_01M...",
   "class": "CKO_PRIVATE_KEY",
   "ckaId": "base64-encoded stable object identifier",
-  "label": "duke_h3@dwdc.club",
+  "label": "duke_h3@dwdc.club tls-client",
   "keyType": "CKK_EC",
   "sensitive": true,
   "extractable": false,

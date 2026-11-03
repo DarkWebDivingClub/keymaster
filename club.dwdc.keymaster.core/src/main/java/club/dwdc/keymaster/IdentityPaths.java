@@ -28,6 +28,9 @@ public final class IdentityPaths {
 
     private static final int H = 0x80000000;
 
+    /** keyvault's {@code ALG_ECDSA} variant 1 is P-256 (variant 0 is secp256k1). */
+    private static final int ECDSA_P256 = 1;
+
     private IdentityPaths() {
     }
 
@@ -98,6 +101,24 @@ public final class IdentityPaths {
                 new AlgField(AlgField.ALG_ED25519, 0, AlgField.ROLE_HPKE).toIndex() | H,
                 new ConfigField(ConfigField.CSPRNG_NONE, index).toIndex() | H
         };
+    }
+
+    /**
+     * {@code m/44'/1240'/mangle(id)'/ecdsa+p256+role'/cfg'} — an X.509 key
+     * (P-256). Alice's TLS client key is {@code m/44'/1240'/1955269225'/196866'/0'}.
+     */
+    public static int[] x509(Identity identity, X509Role role) {
+        return path(Protocol.X509, identity,
+                new AlgField(AlgField.ALG_ECDSA, ECDSA_P256, role.number()).toIndex());
+    }
+
+    /**
+     * The label of an X.509 key: {@code "<identity> <role-token>"}, e.g.
+     * {@code "alice@atlanta.com tls-client"}. Generated, never stored; it is
+     * the PKCS#11 {@code CKA_LABEL} of the key's objects.
+     */
+    public static String x509Label(Identity identity, X509Role role) {
+        return identity.name() + " " + role.token();
     }
 
     /** Convert a vault path to the {@link HDPath} the metadata store keys on. */
