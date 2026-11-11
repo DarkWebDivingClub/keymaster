@@ -1,6 +1,44 @@
 # PKCS#11 Service Protocol
 
-Status: Draft
+Status: Superseded. This is the design from before mission 37.1, and it was
+not built. What shipped is the `"x509"` service in [X509.md](X509.md) and the
+PKCS#11 module in
+[keymaster-avatar/doc/x509/pkcs11-module.md](../../keymaster-avatar/doc/x509/pkcs11-module.md).
+There is no `pkcs11.open`, `describeToken`, `login` or `close`. The service
+has `x509.list`, `x509.sign` and `x509.import`, and `x509.list` does return
+derivation paths. The body below is kept as the historical design.
+
+## Since This Draft
+
+### No placeholder certificate — dropped 2026-10-30
+
+An earlier draft had KeyMaster build a self-signed certificate for every key.
+That was dropped on 2026-10-30. KeyMaster builds no certificates (see
+[X509.md](X509.md#certificates-are-read-not-built)). A key has a certificate
+object only after a CA has issued one and it has been imported. Until then
+the token shows two objects per key, a private key and a public key.
+
+### `pkcs11-gpg` — measured 2026-10-30
+
+`pkcs11-gpg` (`libkm_pkcs11_gpg.so`, crate `crates/pkcs11-gpg` in
+keymaster-avatar) is an earlier PKCS#11 module for GPG keys. Measured on
+2026-10-30:
+
+- 20 functions are implemented and 47 are `CKR_FUNCTION_NOT_SUPPORTED` stubs.
+- It is not registered with p11-kit, and no process maps it.
+- `scd-shim` does not link it. `scd-shim` is the live GPG path: it is the
+  `scdaemon-program` in `gpg-agent.conf`.
+- `CKA_ID` is a positional byte, there is one global session, and `CKA_CLASS`
+  is the only search filter it honours.
+- `create_self_signed_cert` signs with 64 zero bytes.
+
+Its two-pass `C_GetAttributeValue` sizing protocol is correct and worth
+lifting.
+
+### `libkm_pkcs11_gpg.so` — not decided
+
+The package still ships it, but it is not registered and is reference code
+only. Whether to remove it is Rene's call. This document does not decide it.
 
 This document defines the first request-response contract for the PKCS#11
 service between a PKCS#11 Avatar service and the PKCS#11 KeyMaster service.
