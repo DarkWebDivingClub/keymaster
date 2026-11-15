@@ -191,6 +191,60 @@ class NipxxConnectorTest {
         assertEquals(xpub1, xpub2, "realm xpub must be deterministic across vault instances");
     }
 
+    // ── x509 (37.1.3) ─────────────────────────────────────────────────────
+
+    @Test
+    void serviceTypeToCoinType_mapsX509() {
+        assertEquals(Protocol.X509.coinType(), NipxxConnector.serviceTypeToCoinType("x509"));
+    }
+
+    @Test
+    void coinTypeToServiceType_mapsX509() {
+        assertEquals("x509", NipxxConnector.coinTypeToServiceType(Protocol.X509.coinType()));
+        assertEquals("ssh", NipxxConnector.coinTypeToServiceType(Protocol.SSH.coinType()));
+        assertNull(NipxxConnector.coinTypeToServiceType(Protocol.MLS.coinType()));
+    }
+
+    /** A connector whose realm serves SSH, GPG (from setUp) and X.509 for alice. */
+    private NipxxConnector connectorWithX509() {
+        var vault = new Bip32KeyVault(TEST_MNEMONIC);
+        var x509 = new X509ServiceHandler(vault, List.of(new Identity("alice@test.com")), null);
+        x509.setApprovalUI((m, d) -> true);
+        realm.putHandler(Protocol.X509.coinType(), x509);
+        return new NipxxConnector(realm);
+    }
+
+    @Test
+    void handleServiceRequest_routesX509List() {
+        JsonArray params = new JsonArray();
+        params.add(new JsonObject());
+
+        JsonObject response = connectorWithX509().handleServiceRequest("x509", "list", params);
+
+        assertTrue(response.has("result"), response.toString());
+        assertEquals("alice@test.com tls-client", response.getAsJsonObject("result")
+                .getAsJsonArray("keys").get(0).getAsJsonObject().get("label").getAsString());
+    }
+
+    @Test
+    void handleServiceRequest_gpgMethodOnX509Channel_isUnknownMethod() {
+        // The transport strips only "x509.", so a gpg-prefixed method arrives whole.
+        JsonArray params = new JsonArray();
+        params.add(new JsonObject());
+
+        JsonObject response = connectorWithX509()
+                .handleServiceRequest("x509", "gpg.sign_request", params);
+
+        assertEquals("unknown method: gpg.sign_request", response.get("error").getAsString());
+    }
+
+    @Test
+    void handleServiceRequest_x509WithoutHandler_isNoHandler() {
+        // setUp's realm has no X.509 handler; "x509" is still a known service.
+        JsonObject response = connector.handleServiceRequest("x509", "list", new JsonArray());
+        assertEquals("no handler for service: x509", response.get("error").getAsString());
+    }
+
     @Test
     void mangle_keymaster0_goldenValue() {
         assertEquals(0x404a4890, Bip32KeyDerivator.mangle("keymaster:0"));

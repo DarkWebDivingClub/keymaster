@@ -194,9 +194,18 @@ class DaemonControllerTest {
     }
 
     @Test
+    void x509NamesTheX509Protocol() {
+        var selections = controller.parseSelections(
+                identities(filtered("alice@home.org", "x509")), ALICE);
+
+        assertEquals(Set.of(Protocol.X509.coinType()), selections.get(1).coinTypes());
+    }
+
+    @Test
     void anUnknownProtocolIsRejected() {
+        // WireGuard has a coin type (1241) but no service: it must not be accepted.
         assertNull(controller.parseSelections(
-                        identities(filtered("alice@home.org", "x509")), ALICE),
+                        identities(filtered("alice@home.org", "wireguard")), ALICE),
                 "a protocol we cannot serve must fail loudly, not be dropped");
     }
 
@@ -238,7 +247,7 @@ class DaemonControllerTest {
                  "login_xpub":"xpub6CUGRUonZSQ4TWtTMmzXdrXDtyPWKiKbbqnWxx2qaGvxZ2x",
                  "services":["ssh"]}""");
 
-        var params = identities(filtered("alice@home.org", "x509"));
+        var params = identities(filtered("alice@home.org", "wireguard"));
         params.addProperty("descriptor", descriptor.toString());
         params.addProperty("identity", "alice@atlanta.com");
 

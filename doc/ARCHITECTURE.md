@@ -80,7 +80,7 @@ encryption/decryption.
 The initial protocol-specific service contracts are:
 
 - [SSH service protocol](SSH.md)
-- [PKCS#11 service protocol](PKCS11.md)
+- [PKCS#11 service protocol](PKCS11.md), superseded by the [X.509 service](X509.md)
 - [OpenPGP service protocol](GPG.md)
 - [Nostr service protocol](NOSTR.md)
 - [Bitcoin service protocol](BITCOIN.md)

@@ -102,9 +102,10 @@ class RealmTest {
 
         assertNotNull(realm.getHandler(Protocol.SSH.coinType()));
         assertNotNull(realm.getHandler(Protocol.OPENPGP.coinType()));
+        // X.509 keys are computed, so an all-protocols selection always serves them.
         assertEquals(
                 Set.of(Protocol.SSH.coinType(), Protocol.OPENPGP.coinType(),
-                        Protocol.NOSTR.coinType()),
+                        Protocol.NOSTR.coinType(), Protocol.X509.coinType()),
                 realm.getHandlerCoinTypes());
     }
 
@@ -140,8 +141,76 @@ class RealmTest {
         assertNotNull(realm.getHandler(Protocol.OPENPGP.coinType()));
         assertEquals(
                 Set.of(Protocol.SSH.coinType(), Protocol.OPENPGP.coinType(),
-                        Protocol.NOSTR.coinType()),
+                        Protocol.NOSTR.coinType(), Protocol.X509.coinType()),
                 realm.getHandlerCoinTypes());
+    }
+
+    // ── X.509 (37.1.3) ────────────────────────────────────────────────────
+
+    @Test
+    void serviceTypeOf_mapsX509() {
+        assertEquals("x509", Realm.serviceTypeOf(Protocol.X509.coinType()));
+    }
+
+    @Test
+    void resolveHandlers_x509ServesOnlyCoveredIdentities() {
+        var vault = new Bip32KeyVault(TEST_MNEMONIC);
+        var store = new InMemoryKeyMetaDataStore();
+        populateStore(store, "alice@atlanta.com");
+        populateStore(store, "bob@ssh.com");
+        populateStore(store, "carol@x509.com");
+
+        var alice = new Identity("alice@atlanta.com");
+        var bob = new Identity("bob@ssh.com");
+        var carol = new Identity("carol@x509.com");
+        var realm = realm(store, vault, alice,
+                new IdentitySelection(alice),                                   // all protocols
+                new IdentitySelection(bob, Set.of(Protocol.SSH.coinType())),    // ssh only
+                new IdentitySelection(carol, Set.of(Protocol.X509.coinType()))); // x509 named
+
+        var handler = (X509ServiceHandler) realm.getHandler(Protocol.X509.coinType());
+        assertNotNull(handler);
+        assertEquals(List.of(
+                        IdentityPaths.hdPath(IdentityPaths.x509(alice, X509Role.TLS_CLIENT)),
+                        IdentityPaths.hdPath(IdentityPaths.x509(carol, X509Role.TLS_CLIENT))),
+                handler.keys().stream().map(KeyEntry::path).toList());
+    }
+
+    @Test
+    void resolveHandlers_sshOnlySelection_noX509Handler() {
+        var vault = new Bip32KeyVault(TEST_MNEMONIC);
+        var store = new InMemoryKeyMetaDataStore();
+        populateStore(store, "alice@atlanta.com");
+
+        var alice = new Identity("alice@atlanta.com");
+        var realm = realm(store, vault, alice,
+                new IdentitySelection(alice, Set.of(Protocol.SSH.coinType())));
+
+        assertNull(realm.getHandler(Protocol.X509.coinType()));
+    }
+
+    @Test
+    void resolveHandlers_x509HandlerGetsTheKeyStore() {
+        var vault = new Bip32KeyVault(TEST_MNEMONIC);
+        var store = new InMemoryKeyMetaDataStore();
+        populateStore(store, "alice@atlanta.com");
+        var alice = new Identity("alice@atlanta.com");
+
+        var withStore = new Realm(1, "with", List.of(new IdentitySelection(alice)), alice,
+                vault, store.allKeys(), null, store);
+        var withoutStore = realm(store, vault, alice, new IdentitySelection(alice));
+
+        // With a store, an unknown certificate is a verdict; without one, "unsupported".
+        var handler = (X509ServiceHandler) withStore.getHandler(Protocol.X509.coinType());
+        handler.setApprovalUI((m, d) -> true);
+        assertEquals(X509CertCheck.Verdict.MALFORMED,
+                handler.importCert(new X509ImportRequest(new byte[]{1, 2, 3})).verdict());
+
+        var noStore = (X509ServiceHandler) withoutStore.getHandler(Protocol.X509.coinType());
+        noStore.setApprovalUI((m, d) -> true);
+        var e = assertThrows(IllegalArgumentException.class,
+                () -> noStore.importCert(new X509ImportRequest(new byte[]{1, 2, 3})));
+        assertEquals("unsupported", e.getMessage());
     }
 
     @Test

@@ -237,6 +237,7 @@ public class DaemonController implements DaemonServer.RequestHandler {
             case "gpg", "openpgp" -> Protocol.OPENPGP.coinType();
             case "nostr" -> Protocol.NOSTR.coinType();
             case "mls" -> Protocol.MLS.coinType();
+            case "x509" -> Protocol.X509.coinType();
             default -> null;
         };
     }

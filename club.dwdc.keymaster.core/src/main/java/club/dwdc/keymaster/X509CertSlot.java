@@ -10,8 +10,9 @@ import java.util.Optional;
  * {@value #KEY}, value the certificate's DER, base64-encoded.
  *
  * <p>No store interface change — {@link KeyEntry#metadata()} already holds
- * strings, so this works with every {@link KeyMetaDataStore}. Nothing fills
- * the slot yet.
+ * strings, so this works with every {@link KeyMetaDataStore}. Filled by
+ * {@code x509.import} ({@link X509ServiceHandler}, 37.1.3), which replaces
+ * any previous certificate; first used by the enrolment in 37.1.5.
  */
 public final class X509CertSlot {
 

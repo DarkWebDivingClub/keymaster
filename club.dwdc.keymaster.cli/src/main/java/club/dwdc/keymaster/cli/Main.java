@@ -285,7 +285,7 @@ public class Main {
         System.err.println("  identity list                 List all identities");
         System.err.println("  identity show <id>            Show identity details");
         System.err.println("  attach <desc.json> --identity <id> [--realm-name <name>]");
-        System.err.println("                     [--also <id>[:ssh,gpg,nostr]]... [--policy auto]");
+        System.err.println("                     [--also <id>[:ssh,gpg,nostr,x509]]... [--policy auto]");
         System.err.println("                                Create a realm and attach to an avatar");
         System.err.println("  attach <desc.json> --realm <realmId> [--policy auto]");
         System.err.println("                                Attach another avatar to an existing realm");

@@ -7,14 +7,23 @@ import club.dwdc.keyvault.core.ConfigField;
 import club.dwdc.keyvault.core.KeyVault;
 import club.dwdc.keyvault.core.Protocol;
 import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
 import nostr.crypto.nip44.EncryptedPayloads;
 import nostr.crypto.schnorr.Schnorr;
 import nostr.util.NostrUtil;
+import org.bitcoinj.base.BitcoinNetwork;
+import org.bitcoinj.crypto.ChildNumber;
+import org.bitcoinj.crypto.DeterministicKey;
+import org.bitcoinj.crypto.HDKeyDerivation;
+import org.bitcoinj.crypto.MnemonicCode;
 import org.bouncycastle.jce.provider.BouncyCastleProvider;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import java.security.Security;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -145,6 +154,149 @@ class NostrTransportTest {
         byte[] eventIdBytes = NostrUtil.hexToBytes(fakeEventId);
         byte[] sigBytes = NostrUtil.hex128ToBytes(sigHex);
         assertTrue(Schnorr.verify(eventIdBytes, pubKey, sigBytes));
+    }
+
+    // ── sender binding ────────────────────────────────────────────────────
+
+    @Test
+    void serviceRequestFromAnotherChannelsAvatarKeyIsDropped() throws Exception {
+        // Encrypted to KM's ssh channel key, but sent from the avatar's gpg key.
+        Delivery d = deliverServiceRequest(List.of("gpg", "ssh"), "gpg", "ssh");
+
+        assertTrue(d.dispatched().isEmpty(), "must not reach the service handler");
+        assertEquals(0, d.eventsSent(), "must not send a response");
+    }
+
+    @Test
+    void serviceRequestFromTheChannelsOwnAvatarKeyIsDispatched() throws Exception {
+        // Positive control for the test above: same request, the bound sender.
+        Delivery d = deliverServiceRequest(List.of("gpg", "ssh"), "ssh", "ssh");
+
+        assertEquals(List.of("ssh"), d.dispatched());
+        assertEquals(1, d.eventsSent(), "one response event");
+    }
+
+    @Test
+    void x509RequestFromTheGpgAvatarKeyIsDropped() throws Exception {
+        // 37.1.3: encrypted to KM's x509 channel key, sent from the avatar's gpg key.
+        Delivery dropped = deliverServiceRequest(List.of("gpg", "x509"), "gpg", "x509");
+        assertTrue(dropped.dispatched().isEmpty());
+        assertEquals(0, dropped.eventsSent());
+
+        Delivery control = deliverServiceRequest(List.of("gpg", "x509"), "x509", "x509");
+        assertEquals(List.of("x509"), control.dispatched());
+        assertEquals(1, control.eventsSent());
+    }
+
+    // ── x509 channel golden value (Rust side) ─────────────────────────────
+
+    @Test
+    void x509ChannelGolden() {
+        byte[] seed = MnemonicCode.toSeed(List.of(TEST_MNEMONIC.split(" ")), "");
+        assertEquals("5eb00bbddcf069084889a8ab9155568165f5c453ccb85e70811aaed6f6da5fc1"
+                + "9a5ac40b389cd370d086206dec8aa6c43daea6690f20ad3d8d48b2d2ce9e38e4",
+                NostrUtil.bytesToHex(seed));
+
+        String xpub = HDKeyDerivation.deriveChildKey(
+                        HDKeyDerivation.createMasterPrivateKey(seed), new ChildNumber(0))
+                .serializePubB58(BitcoinNetwork.MAINNET);
+        assertEquals("xpub68jrRzQfUmwSaf5Y37Yd5uwfnMRxiR14M3HBonDr91GB7GKEh7R9Mvu2UeCtbASfX"
+                + "Z9FdNo9FwFx6a37HNXUDiXVQFXuadXmevRBa3y7rL8", xpub);
+
+        assertEquals("09d8987776ec7b88ac17e00d02e887fc1a99b9b36741a915537b4951b6ecd8b5",
+                NostrTransport.deriveServicePubkeyFromXpub(xpub, Bip32KeyDerivator.mangle("x509"), 0));
+    }
+
+    /** What happened to one delivered event. */
+    record Delivery(List<String> dispatched, long eventsSent) {}
+
+    /**
+     * Attach-free channel setup, then deliver one request event.
+     *
+     * <p>The avatar login key is m/0 of the test seed; KM's channel keys come
+     * from the vault at {@code RealmPaths.connector(1, xpub)/mangle(svc)/0},
+     * exactly as after an attach. The event is encrypted from the avatar's
+     * {@code fromService} channel key to KM's {@code toService} channel key.
+     */
+    static Delivery deliverServiceRequest(List<String> services, String fromService,
+                                          String toService) throws Exception {
+        Bip32KeyVault vault = new Bip32KeyVault(TEST_MNEMONIC);
+        byte[] seed = MnemonicCode.toSeed(List.of(TEST_MNEMONIC.split(" ")), "");
+        DeterministicKey avatarLogin = HDKeyDerivation.deriveChildKey(
+                HDKeyDerivation.createMasterPrivateKey(seed), new ChildNumber(0));
+        String avatarXpub = avatarLogin.serializePubB58(BitcoinNetwork.MAINNET);
+        int[] connectorPath = RealmPaths.connector(1, avatarXpub);
+
+        RecordingRelay relay = new RecordingRelay();
+        List<String> dispatched = new ArrayList<>();
+        NostrTransport transport = new NostrTransport(
+                new VaultTransportSigner(vault, IdentityPaths.nostr(new Identity("alice@atlanta.com"))));
+        transport.connect(relay);
+        transport.setRealmVault(vault, connectorPath);
+        transport.setServiceRequestHandler((serviceType, method, params) -> {
+            dispatched.add(serviceType);
+            JsonObject ok = new JsonObject();
+            ok.add("result", new JsonObject());
+            return ok;
+        });
+        transport.deriveServiceChannels(avatarXpub, services);
+
+        // Sender: the avatar's channel key for fromService (it holds the private half).
+        DeterministicKey sender = HDKeyDerivation.deriveChildKey(
+                HDKeyDerivation.deriveChildKey(avatarLogin,
+                        new ChildNumber(Bip32KeyDerivator.mangle(fromService))),
+                new ChildNumber(0));
+        byte[] senderPub = Arrays.copyOfRange(sender.getPubKey(), 1, 33);
+
+        // Recipient: KM's channel key for toService.
+        byte[] kmCompressed = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null,
+                RealmPaths.serviceChannel(connectorPath, toService, 0)).data();
+        byte[] kmPub = Arrays.copyOfRange(kmCompressed, 1, 33);
+
+        String request = "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"method\":\""
+                + toService + ".request_identities\",\"params\":{}}";
+        String content = NostrTransport.encrypt(request, sender.getPrivKeyBytes(), kmPub);
+
+        // Non-vacuous: KM's toService channel key does decrypt this event, so a
+        // drop can only come from the sender-binding check, not from decryption.
+        byte[] sharedX = vault.execute(KeyVault.FN_KEY_AGREEMENT, senderPub,
+                RealmPaths.serviceChannel(connectorPath, toService, 0)).data();
+        assertEquals(request, EncryptedPayloads.decrypt(content,
+                NostrTransport.deriveNip44ConversationKey(sharedX)));
+
+        JsonArray tags = new JsonArray();
+        JsonArray pTag = new JsonArray();
+        pTag.add("p");
+        pTag.add(NostrUtil.bytesToHex(kmPub));
+        tags.add(pTag);
+        String senderHex = NostrUtil.bytesToHex(senderPub);
+        long createdAt = 1700000000L;
+
+        JsonObject event = new JsonObject();
+        event.addProperty("id", NostrTransport.computeEventId(senderHex, createdAt, 27235, tags, content));
+        event.addProperty("pubkey", senderHex);
+        event.addProperty("created_at", createdAt);
+        event.addProperty("kind", 27235);
+        event.add("tags", tags);
+        event.addProperty("content", content);
+
+        long before = relay.eventsSent();
+        transport.handleIncomingEvent(event);
+        return new Delivery(dispatched, relay.eventsSent() - before);
+    }
+
+    /** RelayClient that records what is sent and never connects anywhere. */
+    static final class RecordingRelay implements RelayClient {
+        final List<String> sent = new ArrayList<>();
+
+        @Override public void setListener(Listener listener) { }
+        @Override public void connect() { }
+        @Override public void send(String message) { sent.add(message); }
+        @Override public void close() { }
+
+        long eventsSent() {
+            return sent.stream().filter(m -> m.startsWith("[\"EVENT\"")).count();
+        }
     }
 
     /** Build a test TransportSigner for a given identity. */
