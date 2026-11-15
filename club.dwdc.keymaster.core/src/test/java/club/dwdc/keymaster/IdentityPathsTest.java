@@ -58,6 +58,66 @@ class IdentityPathsTest {
     }
 
     @Test
+    void x509TlsClientMatchesTheMission() {   // m/44'/1240'/1955269225'/196866'/0'
+        // 196866 = ALG_ECDSA(3) << 16 | P-256(1) << 8 | tls-client(2)
+        assertArrayEquals(p(44 | H, 1240 | H, MANGLE | H, 196866 | H, 0 | H),
+                IdentityPaths.x509(ALICE, X509Role.TLS_CLIENT));
+    }
+
+    @Test
+    void x509LabelIsGenerated() {
+        assertEquals("alice@atlanta.com tls-client",
+                IdentityPaths.x509Label(ALICE, X509Role.TLS_CLIENT));
+    }
+
+    @Test
+    void x509LabelSurvivesPercentEncoding() {
+        String label = IdentityPaths.x509Label(ALICE, X509Role.TLS_CLIENT);
+
+        // RFC 7512 lets '@' appear literally or as %40; a space must be %20.
+        for (boolean encodeAt : new boolean[]{false, true}) {
+            String encoded = pk11Encode(label, encodeAt);
+
+            assertTrue(encoded.equals("alice@atlanta.com%20tls-client")
+                    || encoded.equals("alice%40atlanta.com%20tls-client"), encoded);
+            assertFalse(encoded.contains(" "), "space must be encoded");
+            assertTrue(encoded.endsWith("%20tls-client"), "role token must be intact");
+            assertEquals(label, pk11Decode(encoded));
+        }
+    }
+
+    /** Minimal RFC 7512 attribute-value encoder: unreserved chars stay, the rest is %XX. */
+    private static String pk11Encode(String value, boolean encodeAt) {
+        StringBuilder out = new StringBuilder();
+        for (byte b : value.getBytes(java.nio.charset.StandardCharsets.UTF_8)) {
+            char c = (char) (b & 0xFF);
+            boolean unreserved = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+                    || (c >= '0' && c <= '9') || c == '-' || c == '.' || c == '_' || c == '~';
+            if (unreserved || (c == '@' && !encodeAt)) {
+                out.append(c);
+            } else {
+                out.append(String.format("%%%02X", b & 0xFF));
+            }
+        }
+        return out.toString();
+    }
+
+    /** Inverse of {@link #pk11Encode}. */
+    private static String pk11Decode(String encoded) {
+        var bytes = new java.io.ByteArrayOutputStream();
+        for (int i = 0; i < encoded.length(); i++) {
+            char c = encoded.charAt(i);
+            if (c == '%') {
+                bytes.write(Integer.parseInt(encoded.substring(i + 1, i + 3), 16));
+                i += 2;
+            } else {
+                bytes.write(c);
+            }
+        }
+        return bytes.toString(java.nio.charset.StandardCharsets.UTF_8);
+    }
+
+    @Test
     void mlsHpkeVariesOnlyInItsConfigIndex() {
         int[] first = IdentityPaths.mlsHpke(ALICE, 0);
         int[] second = IdentityPaths.mlsHpke(ALICE, 1);

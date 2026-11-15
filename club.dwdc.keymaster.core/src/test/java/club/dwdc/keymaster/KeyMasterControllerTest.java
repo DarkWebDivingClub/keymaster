@@ -38,6 +38,39 @@ class KeyMasterControllerTest {
     }
 
     @Test
+    void createIdentity_registersTlsClientEntry() {
+        var store = new InMemoryKeyMetaDataStore();
+        var ctrl = new KeyMasterController(new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC), store));
+        ctrl.createIdentity("alice@atlanta.com", "Alice", "alice@atlanta.com");
+
+        var path = IdentityPaths.hdPath(
+                IdentityPaths.x509(new Identity("alice@atlanta.com"), X509Role.TLS_CLIENT));
+        KeyEntry entry = store.getKey(path);
+        assertNotNull(entry, "TLS client entry registered");
+        assertEquals(1, store.keysByProtocol(Protocol.X509.coinType()).size(), "TLS client only");
+        assertFalse(entry.metadata().containsKey("label"), "label is generated, never stored");
+        assertTrue(X509CertSlot.get(entry).isEmpty(), "nothing fills the certificate slot yet");
+    }
+
+    @Test
+    void createIdentity_keepsExistingX509Entry() {
+        var store = new InMemoryKeyMetaDataStore();
+        var path = IdentityPaths.hdPath(
+                IdentityPaths.x509(new Identity("alice@atlanta.com"), X509Role.TLS_CLIENT));
+        byte[] der = {0x30, 0x03, 0x02, 0x01, 0x01};
+        var existing = X509CertSlot.with(
+                new KeyEntry(path, java.util.Map.of("note", "keep me")), der);
+        store.addKey(existing);
+
+        var ctrl = new KeyMasterController(new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC), store));
+        ctrl.createIdentity("alice@atlanta.com", "Alice", "alice@atlanta.com");
+
+        KeyEntry after = store.getKey(path);
+        assertArrayEquals(der, X509CertSlot.get(after).orElseThrow(), "certificate kept");
+        assertEquals("keep me", after.metadata().get("note"), "other metadata kept");
+    }
+
+    @Test
     void createIdentity_storesKeysInMetadataStore() {
         var store = new InMemoryKeyMetaDataStore();
         var km = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC), store);
