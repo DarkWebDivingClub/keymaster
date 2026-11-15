@@ -96,7 +96,8 @@ That produces `keymaster-desktop`, which installs `km-daemon` and
 | [doc/GPG.md](doc/GPG.md) | OpenPGP certificates and the GPG agent |
 | [doc/NOSTR.md](doc/NOSTR.md) | Nostr signing and transport |
 | [doc/BITCOIN.md](doc/BITCOIN.md) | Bitcoin key derivation |
-| [doc/PKCS11.md](doc/PKCS11.md) | PKCS#11 exploration |
+| [doc/X509.md](doc/X509.md) | X.509 keys, the x509 service and the PKCS#11 object model |
+| [doc/PKCS11.md](doc/PKCS11.md) | PKCS#11 exploration (superseded by X509.md) |
 | [doc/service-handler-design.md](doc/service-handler-design.md) | Service handler design |
 
 ## License
