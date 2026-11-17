@@ -1,5 +1,7 @@
 package club.dwdc.keymaster;
 
+import java.util.List;
+
 /**
  * The X.509 key roles — one table for both the derivation path and the label.
  *
@@ -21,6 +23,12 @@ public enum X509Role {
     TLS_CLIENT(2, "tls-client", "1.3.6.1.5.5.7.3.2"),     // clientAuth
     CODE_SIGNING(3, "code-signing", "1.3.6.1.5.5.7.3.3"), // codeSigning
     SMIME(4, "smime", "1.3.6.1.5.5.7.3.4");               // emailProtection
+
+    /**
+     * The roles every identity gets: {@code createIdentity} registers these,
+     * and the X.509 service serves exactly these paths.
+     */
+    public static final List<X509Role> TEMPLATE = List.of(TLS_CLIENT);
 
     private final int number;
     private final String token;

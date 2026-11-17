@@ -248,7 +248,8 @@ public class NostrTransport {
      * Derive service channel keypairs from the exchanged xpubs.
      * Both sides compute the same channel pubkeys independently.
      */
-    private void deriveServiceChannels(String avatarLoginXpub, List<String> services) {
+    // Package-private for NostrTransportTest.
+    void deriveServiceChannels(String avatarLoginXpub, List<String> services) {
         if (vault == null || connectorPath == null) {
             log.warn("No realm vault/path set — cannot derive service channels");
             return;
@@ -443,7 +444,8 @@ public class NostrTransport {
         }
     }
 
-    private void handleIncomingEvent(JsonObject event) {
+    // Package-private for NostrTransportTest.
+    void handleIncomingEvent(JsonObject event) {
         try {
             int kind = event.get("kind").getAsInt();
             if (kind != PROTOCOL_KIND) return;
@@ -474,6 +476,17 @@ public class NostrTransport {
 
             if (plaintext == null) {
                 log.debug("Could not decrypt event {} from {}", eventId, senderPubKey);
+                return;
+            }
+
+            // Sender binding: decryption proves the sender holds event.pubkey's
+            // private key (NIP-44 conversation key = ECDH(channel key, event.pubkey));
+            // this binds that key to the channel. Fails closed if the channel has
+            // no avatar key. Content is not logged.
+            if (matchedChannel != null
+                    && !senderPubKey.equals(matchedChannel.avatarServicePubKeyHex)) {
+                log.warn("Dropping event {}: sender {} is not the avatar key of service channel {}",
+                        eventId, senderPubKey, matchedChannel.serviceType);
                 return;
             }
 
