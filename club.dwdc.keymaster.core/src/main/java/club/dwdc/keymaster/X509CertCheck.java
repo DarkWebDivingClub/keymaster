@@ -8,7 +8,6 @@ import java.security.GeneralSecurityException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.util.Arrays;
-import java.util.HexFormat;
 import java.util.List;
 
 /**
@@ -41,11 +40,32 @@ public final class X509CertCheck {
     /** Result of {@link #check}. */
     public enum Verdict { ACCEPTED, MALFORMED, KEY_MISMATCH, EKU_MISMATCH }
 
-    /** DER SPKI header for an EC P-256 key with a 65-byte uncompressed point. */
-    private static final byte[] P256_SPKI_PREFIX = HexFormat.of().parseHex(
+    /**
+     * DER SPKI header for an EC P-256 key with a 65-byte uncompressed point.
+     * Not java.util.HexFormat: Android has it only from API 34, and the app
+     * runs on API 26 and up.
+     */
+    private static final byte[] P256_SPKI_PREFIX = parseHex(
             "3059301306072a8648ce3d020106082a8648ce3d030107034200");
 
     private static final int POINT_LENGTH = 65;
+
+    /** Lower- or upper-case hex to bytes. Even length required. */
+    private static byte[] parseHex(String hex) {
+        if (hex.length() % 2 != 0) {
+            throw new IllegalArgumentException("odd hex length: " + hex.length());
+        }
+        byte[] out = new byte[hex.length() / 2];
+        for (int i = 0; i < out.length; i++) {
+            int hi = Character.digit(hex.charAt(2 * i), 16);
+            int lo = Character.digit(hex.charAt(2 * i + 1), 16);
+            if (hi < 0 || lo < 0) {
+                throw new IllegalArgumentException("not hex at " + (2 * i));
+            }
+            out[i] = (byte) ((hi << 4) | lo);
+        }
+        return out;
+    }
 
     private X509CertCheck() {
     }
