@@ -1,5 +1,6 @@
 package club.dwdc.keymaster;
 
+import club.dwdc.keyvault.core.Alg;
 import club.dwdc.keyvault.core.KeyVault;
 import club.dwdc.keyvault.core.VaultResult;
 
@@ -117,7 +118,7 @@ public final class X509CertCheck {
 
     /** The vault's 65-byte SEC1 uncompressed point (04||X||Y) at the role's path. */
     static byte[] vaultPoint(KeyVault vault, Identity identity, X509Role role) {
-        VaultResult result = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null,
+        VaultResult result = vault.execute(Alg.P256, KeyVault.FN_GET_PUBLIC_KEY, KeyVault.OPT_DEFAULT, null,
                 IdentityPaths.x509(identity, role));
         byte[] data = result.isOk() ? result.data() : null;
         // data() is the 65-byte uncompressed point; the chain code is a separate field.

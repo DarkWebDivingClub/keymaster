@@ -1,5 +1,6 @@
 package club.dwdc.keymaster;
 
+import club.dwdc.keyvault.core.Alg;
 import club.dwdc.keyvault.core.KeyVault;
 import nostr.util.NostrUtil;
 
@@ -30,17 +31,17 @@ final class VaultTransportSigner implements TransportSigner {
 
     @Override
     public String getPubkey() {
-        byte[] compressed = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, path).data();
+        byte[] compressed = vault.execute(Alg.SECP256K1, KeyVault.FN_GET_PUBLIC_KEY, KeyVault.OPT_DEFAULT, null, path).data();
         return NostrUtil.bytesToHex(Arrays.copyOfRange(compressed, 1, 33));
     }
 
     @Override
     public byte[] sign(byte[] hash) {
-        return vault.execute(KeyVault.FN_SIGN, hash, path).data();
+        return vault.execute(Alg.SECP256K1, KeyVault.FN_SIGN, KeyVault.OPT_SECP256K1_SCHNORR, hash, path).data();
     }
 
     @Override
     public byte[] ecdh(byte[] peerPubKey) {
-        return vault.execute(KeyVault.FN_KEY_AGREEMENT, peerPubKey, path).data();
+        return vault.execute(Alg.SECP256K1, KeyVault.FN_KEY_AGREEMENT, KeyVault.OPT_DEFAULT, peerPubKey, path).data();
     }
 }

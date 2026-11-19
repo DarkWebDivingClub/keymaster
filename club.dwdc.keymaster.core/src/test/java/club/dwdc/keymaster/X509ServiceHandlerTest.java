@@ -41,7 +41,7 @@ class X509ServiceHandlerTest {
 
     private static final Identity ALICE = new Identity("alice@atlanta.com");
     private static final Identity BOB = new Identity("bob@boston.com");
-    private static final String ALICE_PATH = "m/44'/1240'/1955269225'/196866'/0'";
+    private static final String ALICE_PATH = "m/44'/1240'/1955269225'/2'/0'"; // 196866' before 0.9.0
 
     private static Bip32KeyVault vault;
 

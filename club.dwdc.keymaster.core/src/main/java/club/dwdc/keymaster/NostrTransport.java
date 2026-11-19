@@ -1,5 +1,6 @@
 package club.dwdc.keymaster;
 
+import club.dwdc.keyvault.core.Alg;
 import club.dwdc.keyvault.core.Bip32KeyDerivator;
 import club.dwdc.keyvault.core.KeyVault;
 import club.dwdc.keyvault.core.VaultResult;
@@ -265,7 +266,7 @@ public class NostrTransport {
                 int[] svcPath = extendPath(connectorPath, protocolIdx, seq);
 
                 // Derive our (KM) service channel public key from vault
-                VaultResult pubResult = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, svcPath);
+                VaultResult pubResult = vault.execute(Alg.SECP256K1, KeyVault.FN_GET_PUBLIC_KEY, KeyVault.OPT_DEFAULT, null, svcPath);
                 if (!pubResult.isOk()) {
                     log.error("Failed to derive service pubkey for {}: status {}",
                             serviceType, pubResult.status());
@@ -696,7 +697,7 @@ public class NostrTransport {
      */
     private String encryptViaVault(String plaintext, byte[] recipientPubKey, int[] vaultPath)
             throws Exception {
-        VaultResult ecdhResult = vault.execute(KeyVault.FN_KEY_AGREEMENT, recipientPubKey, vaultPath);
+        VaultResult ecdhResult = vault.execute(Alg.SECP256K1, KeyVault.FN_KEY_AGREEMENT, KeyVault.OPT_DEFAULT, recipientPubKey, vaultPath);
         if (!ecdhResult.isOk()) {
             throw new RuntimeException("Vault ECDH failed: status " + ecdhResult.status());
         }
@@ -710,7 +711,7 @@ public class NostrTransport {
      */
     private String decryptViaVault(String ciphertext, byte[] senderPubKey, int[] vaultPath)
             throws Exception {
-        VaultResult ecdhResult = vault.execute(KeyVault.FN_KEY_AGREEMENT, senderPubKey, vaultPath);
+        VaultResult ecdhResult = vault.execute(Alg.SECP256K1, KeyVault.FN_KEY_AGREEMENT, KeyVault.OPT_DEFAULT, senderPubKey, vaultPath);
         if (!ecdhResult.isOk()) {
             throw new RuntimeException("Vault ECDH failed: status " + ecdhResult.status());
         }
@@ -723,7 +724,7 @@ public class NostrTransport {
      */
     private String signViaVault(String eventIdHex, int[] vaultPath) throws Exception {
         byte[] eventIdBytes = NostrUtil.hexToBytes(eventIdHex);
-        VaultResult sigResult = vault.execute(KeyVault.FN_SIGN, eventIdBytes, vaultPath);
+        VaultResult sigResult = vault.execute(Alg.SECP256K1, KeyVault.FN_SIGN, KeyVault.OPT_SECP256K1_SCHNORR, eventIdBytes, vaultPath);
         if (!sigResult.isOk()) {
             throw new RuntimeException("Vault sign failed: status " + sigResult.status());
         }

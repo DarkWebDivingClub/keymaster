@@ -1,6 +1,7 @@
 package club.dwdc.keymaster;
 
-import club.dwdc.keyvault.core.AlgField;
+import club.dwdc.keyvault.core.Alg;
+import club.dwdc.keyvault.core.UseField;
 import club.dwdc.keyvault.core.Bip32KeyDerivator;
 import club.dwdc.keyvault.core.Bip32KeyVault;
 import club.dwdc.keyvault.core.ConfigField;
@@ -27,7 +28,7 @@ class RealmTest {
             new ChildNumber(44, true),
             new ChildNumber(Protocol.SSH.coinType(), true),
             new ChildNumber(Bip32KeyDerivator.mangle(identity), true),
-            new ChildNumber(new AlgField(AlgField.ALG_ED25519, 0, 0).toIndex(), true),
+            new ChildNumber(new UseField(0, 0).toIndex(), true),
             new ChildNumber(new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex(), true)
         );
         return new KeyEntry(path, Map.of("comment", identity));
@@ -38,7 +39,7 @@ class RealmTest {
             new ChildNumber(44, true),
             new ChildNumber(Protocol.OPENPGP.coinType(), true),
             new ChildNumber(Bip32KeyDerivator.mangle(identity), true),
-            new ChildNumber(new AlgField(AlgField.ALG_ED25519, 0, role).toIndex(), true),
+            new ChildNumber(new UseField(0, role).toIndex(), true),
             new ChildNumber(new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex(), true)
         );
         return new KeyEntry(path, Map.of(
@@ -55,7 +56,7 @@ class RealmTest {
             new ChildNumber(44, true),
             new ChildNumber(Protocol.NOSTR.coinType(), true),
             new ChildNumber(Bip32KeyDerivator.mangle(identity), true),
-            new ChildNumber(new AlgField(AlgField.ALG_SCHNORR, 0, 0).toIndex(), true),
+            new ChildNumber(new UseField(0, 0).toIndex(), true),
             new ChildNumber(new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex(), true)
         );
         return new KeyEntry(path, Map.of("identity", identity));
@@ -66,7 +67,7 @@ class RealmTest {
             new ChildNumber(44, true),
             new ChildNumber(Protocol.MLS.coinType(), true),
             new ChildNumber(Bip32KeyDerivator.mangle(identity), true),
-            new ChildNumber(new AlgField(AlgField.ALG_ED25519, 0, AlgField.ROLE_SIGN).toIndex(), true),
+            new ChildNumber(new UseField(0, 0).toIndex(), true),
             new ChildNumber(new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex(), true)
         );
         return new KeyEntry(path, Map.of("identity", identity));
@@ -466,12 +467,15 @@ class RealmTest {
 
     @Test
     void identityKeys_unchangedByTheRefactor() {
-        // Golden values: the identity trees are frozen, so these must never
-        // move. See doc/key-derivation.md.
+        // Golden values. The SSH key moved once, deliberately, in 0.9.0
+        // (keyvault 0.6.0 SLIP-10; mission 48): it equals keyvault's
+        // GoldenPathTest sshAlice key 2b8c399b…5ab3, computed independently by
+        // keyvault/tools/slip10_ref.py. 0.8.x: AAAAIHeeTgJw…UfjQ.
+        // The Nostr key below is unchanged. See doc/key-derivation.md.
         var vault = new Bip32KeyVault(TEST_MNEMONIC);
 
         assertEquals(
-                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHeeTgJw+7G4gFYEZPDvW9bbMApCD+5Pdeq1butlUfjQ"
+                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICuMOZt3izMiTlB3u99HllVHgW5f4MTTSqd2gwp0vFqz"
                         + " alice@atlanta.com",
                 SshServiceHandler.getAuthorizedKeysLine(vault, "alice@atlanta.com"));
 
@@ -480,10 +484,10 @@ class RealmTest {
                 44 | H,
                 Protocol.NOSTR.coinType() | H,
                 new Identity("alice@atlanta.com").mangled() | H,
-                new AlgField(AlgField.ALG_SCHNORR, 0, 0).toIndex() | H,
+                new UseField(0, 0).toIndex() | H,
                 new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex() | H
         };
-        byte[] compressed = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, nostrPath).data();
+        byte[] compressed = vault.execute(Alg.SECP256K1, KeyVault.FN_GET_PUBLIC_KEY, 0, null, nostrPath).data();
         assertEquals("fa7851825be694a747ec9d93ea0b46be6f36a40af6ec3c5b2682d1dafe59dd12",
                 nostr.util.NostrUtil.bytesToHex(
                         java.util.Arrays.copyOfRange(compressed, 1, 33)));

@@ -2,9 +2,14 @@ package club.dwdc.keymaster.desktop;
 
 import club.dwdc.keymaster.KeyEntry;
 import club.dwdc.keymaster.KeyMetaDataStore;
+import club.dwdc.keymaster.StoreMigration;
 import club.dwdc.keyvault.core.Bip32KeyDerivator;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParseException;
+import com.google.gson.JsonParser;
 import com.google.gson.TypeAdapter;
 import com.google.gson.reflect.TypeToken;
 import com.google.gson.stream.JsonReader;
@@ -12,12 +17,15 @@ import com.google.gson.stream.JsonToken;
 import com.google.gson.stream.JsonWriter;
 import org.bitcoinj.crypto.ChildNumber;
 import org.bitcoinj.crypto.HDPath;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.lang.reflect.Type;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.util.*;
@@ -30,7 +38,16 @@ import java.util.*;
  * created with mode 0700, files with mode 0600.
  *
  * <p>Derivation paths are serialized as standard BIP-32 strings,
- * e.g. {@code "m/44'/1238'/624718342'/65536'/0'"}.
+ * e.g. {@code "m/44'/1238'/624718342'/0'/0'"}.
+ *
+ * <p>File format version {@value StoreMigration#CURRENT_VERSION} (keymaster
+ * 0.9.0): {@code {"version": 2, "keys": [...]}}. A file that is a bare JSON
+ * array was written by keymaster 0.8.x or earlier: on first load it is copied
+ * to {@code key-metadata.json.pre-0.9.bak}, migrated with
+ * {@link StoreMigration}, and rewritten in the new format; the migration log
+ * goes to the application log and to {@code key-metadata.migration-0.9.log}.
+ * A file that cannot be read or migrated is left untouched and the store
+ * fails to open, which stops the daemon with the reason.
  */
 public class FileKeyMetaDataStore implements KeyMetaDataStore {
 
@@ -44,6 +61,11 @@ public class FileKeyMetaDataStore implements KeyMetaDataStore {
             .disableHtmlEscaping()
             .registerTypeHierarchyAdapter(HDPath.class, new HDPathTypeAdapter())
             .create();
+
+    private static final Logger log = LoggerFactory.getLogger(FileKeyMetaDataStore.class);
+
+    static final String BACKUP_SUFFIX = ".pre-0.9.bak";
+    static final String MIGRATION_LOG = "key-metadata.migration-0.9.log";
 
     private static final Type KEY_LIST_TYPE = new TypeToken<List<KeyEntry>>() {}.getType();
     private static final Type NAME_MAP_TYPE = new TypeToken<Map<Integer, String>>() {}.getType();
@@ -122,16 +144,80 @@ public class FileKeyMetaDataStore implements KeyMetaDataStore {
         if (!Files.exists(keyMetadataPath)) {
             return new LinkedHashMap<>();
         }
+        String json;
         try {
-            String json = Files.readString(keyMetadataPath);
-            List<KeyEntry> entries = GSON.fromJson(json, KEY_LIST_TYPE);
-            if (entries == null) return new LinkedHashMap<>();
-            LinkedHashMap<HDPath, KeyEntry> map = new LinkedHashMap<>();
-            for (KeyEntry e : entries) map.put(e.path(), e);
-            return map;
+            json = Files.readString(keyMetadataPath);
         } catch (IOException e) {
             throw new UncheckedIOException("Failed to read key metadata", e);
         }
+        JsonElement root;
+        try {
+            root = json.isBlank() ? null : JsonParser.parseString(json);
+        } catch (JsonParseException e) {
+            throw new IllegalStateException(keyMetadataPath + " is not valid JSON; left unchanged", e);
+        }
+        if (root == null || root.isJsonNull()) {
+            return new LinkedHashMap<>();
+        }
+        if (root.isJsonArray()) {
+            return migrateLegacy(root);
+        }
+        if (!root.isJsonObject() || !root.getAsJsonObject().has("version")) {
+            throw new IllegalStateException(keyMetadataPath + " has an unknown format; left unchanged");
+        }
+        JsonObject obj = root.getAsJsonObject();
+        int version = obj.get("version").getAsInt();
+        if (version != StoreMigration.CURRENT_VERSION) {
+            throw new IllegalStateException(keyMetadataPath + " has format version " + version
+                    + "; this keymaster reads version " + StoreMigration.CURRENT_VERSION + "; left unchanged");
+        }
+        return toMap(parseEntries(obj.get("keys")));
+    }
+
+    /** A bare array: keymaster 0.8.x. Back up, migrate, rewrite (mission 48.3 step 5). */
+    private Map<HDPath, KeyEntry> migrateLegacy(JsonElement array) {
+        List<KeyEntry> legacy = parseEntries(array);
+        StoreMigration.Result result =
+                StoreMigration.migrate(legacy, System.currentTimeMillis() / 1000);
+
+        Path backup = keyMetadataPath.resolveSibling(keyMetadataPath.getFileName() + BACKUP_SUFFIX);
+        try {
+            if (!Files.exists(backup)) {
+                Files.copy(keyMetadataPath, backup, StandardCopyOption.COPY_ATTRIBUTES);
+            }
+        } catch (IOException e) {
+            throw new UncheckedIOException("Failed to back up " + keyMetadataPath + "; left unchanged", e);
+        }
+
+        Map<HDPath, KeyEntry> migrated = toMap(result.entries());
+        log.info("Migrating {} ({} entries) to format version {}; backup {}",
+                keyMetadataPath, legacy.size(), StoreMigration.CURRENT_VERSION, backup);
+        StringBuilder text = new StringBuilder("# keymaster 0.9.0 store migration, ")
+                .append(java.time.Instant.now()).append('\n');
+        for (String line : result.log()) {
+            log.info("migration: {}", line);
+            text.append(line).append('\n');
+        }
+        saveFile(keyMetadataPath.resolveSibling(MIGRATION_LOG), text.toString());
+        writeKeys(migrated.values());
+        return migrated;
+    }
+
+    private List<KeyEntry> parseEntries(JsonElement array) {
+        try {
+            List<KeyEntry> entries = GSON.fromJson(array, KEY_LIST_TYPE);
+            return entries == null ? List.of() : entries;
+        } catch (JsonParseException | IllegalArgumentException | IllegalStateException e) {
+            throw new IllegalStateException(keyMetadataPath + " has unreadable entries; left unchanged", e);
+        }
+    }
+
+    private static LinkedHashMap<HDPath, KeyEntry> toMap(List<KeyEntry> entries) {
+        LinkedHashMap<HDPath, KeyEntry> map = new LinkedHashMap<>();
+        for (KeyEntry e : entries) {
+            map.put(e.path(), e);
+        }
+        return map;
     }
 
     private Map<Integer, String> loadIdentityNames() {
@@ -148,7 +234,14 @@ public class FileKeyMetaDataStore implements KeyMetaDataStore {
     }
 
     private void saveKeys() {
-        saveFile(keyMetadataPath, GSON.toJson(new ArrayList<>(keys.values()), KEY_LIST_TYPE));
+        writeKeys(keys.values());
+    }
+
+    private void writeKeys(Collection<KeyEntry> entries) {
+        JsonObject obj = new JsonObject();
+        obj.addProperty("version", StoreMigration.CURRENT_VERSION);
+        obj.add("keys", GSON.toJsonTree(new ArrayList<>(entries), KEY_LIST_TYPE));
+        saveFile(keyMetadataPath, GSON.toJson(obj));
     }
 
     private void saveIdentityNames() {
@@ -162,8 +255,11 @@ public class FileKeyMetaDataStore implements KeyMetaDataStore {
                 Files.createDirectories(dir);
                 Files.setPosixFilePermissions(dir, DIR_PERMS);
             }
-            Files.writeString(file, content);
-            Files.setPosixFilePermissions(file, FILE_PERMS);
+            // Write a sibling and move it into place, so a crash never leaves half a file.
+            Path tmp = file.resolveSibling(file.getFileName() + ".tmp");
+            Files.writeString(tmp, content);
+            Files.setPosixFilePermissions(tmp, FILE_PERMS);
+            Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
         } catch (IOException e) {
             throw new UncheckedIOException("Failed to write " + file.getFileName(), e);
         }

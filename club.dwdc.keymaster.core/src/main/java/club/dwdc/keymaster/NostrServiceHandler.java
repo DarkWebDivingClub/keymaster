@@ -1,6 +1,7 @@
 package club.dwdc.keymaster;
 
-import club.dwdc.keyvault.core.AlgField;
+import club.dwdc.keyvault.core.Alg;
+import club.dwdc.keyvault.core.UseField;
 import club.dwdc.keyvault.core.Bip32KeyDerivator;
 import club.dwdc.keyvault.core.ConfigField;
 import club.dwdc.keyvault.core.KeyVault;
@@ -99,7 +100,7 @@ public class NostrServiceHandler extends AbstractServiceHandler {
         checkApproval("get_public_keys", "Nostr public key listing");
         List<NostrPublicKey> result = new ArrayList<>();
         for (KeyEntry key : keys) {
-            VaultResult pubResult = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, key.toVaultPath());
+            VaultResult pubResult = vault.execute(key.alg(), KeyVault.FN_GET_PUBLIC_KEY, KeyVault.OPT_DEFAULT, null, key.toVaultPath());
             if (!pubResult.isOk()) {
                 continue;
             }
@@ -119,7 +120,7 @@ public class NostrServiceHandler extends AbstractServiceHandler {
     public NostrSignEventResponse signEvent(NostrSignEventRequest request) {
         checkApproval("sign_event", "Nostr event signing");
         KeyEntry key = findKeyByPubkey(request.publicKey());
-        VaultResult signResult = vault.execute(KeyVault.FN_SIGN, request.eventHash(), key.toVaultPath());
+        VaultResult signResult = vault.execute(key.alg(), KeyVault.FN_SIGN, KeyVault.OPT_DEFAULT, request.eventHash(), key.toVaultPath());
         if (!signResult.isOk()) {
             throw new IllegalStateException("sign failed: status=" + signResult.status());
         }
@@ -205,7 +206,7 @@ public class NostrServiceHandler extends AbstractServiceHandler {
         // of whether identity metadata is present on the key entry.
         int mangledIdentity = nostrKey.toVaultPath()[2] & ~H;
         int[] path = mlsSignPath(mangledIdentity);
-        VaultResult result = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, path);
+        VaultResult result = vault.execute(Alg.ED25519, KeyVault.FN_GET_PUBLIC_KEY, KeyVault.OPT_DEFAULT, null, path);
         if (!result.isOk()) {
             throw new IllegalStateException("MLS pubkey derivation failed: status=" + result.status());
         }
@@ -226,7 +227,7 @@ public class NostrServiceHandler extends AbstractServiceHandler {
             throw new IllegalArgumentException("unknown MLS pubkey — call get_mls_pubkey first");
         }
         int[] path = mlsSignPath(mangled);
-        VaultResult result = vault.execute(KeyVault.FN_SIGN, request.data(), path);
+        VaultResult result = vault.execute(Alg.ED25519, KeyVault.FN_SIGN, KeyVault.OPT_DEFAULT, request.data(), path);
         if (!result.isOk()) {
             throw new IllegalStateException("MLS sign failed: status=" + result.status());
         }
@@ -256,7 +257,7 @@ public class NostrServiceHandler extends AbstractServiceHandler {
         try {
             byte[] hash = MessageDigest.getInstance("SHA-256")
                     .digest(serialized.getBytes(StandardCharsets.UTF_8));
-            VaultResult result = vault.execute(KeyVault.FN_SIGN, hash, nostrKey.toVaultPath());
+            VaultResult result = vault.execute(nostrKey.alg(), KeyVault.FN_SIGN, KeyVault.OPT_DEFAULT, hash, nostrKey.toVaultPath());
             if (!result.isOk()) {
                 throw new IllegalStateException(
                         "account identity proof sign failed: status=" + result.status());
@@ -280,7 +281,7 @@ public class NostrServiceHandler extends AbstractServiceHandler {
             throw new IllegalArgumentException("unknown MLS pubkey — call get_mls_pubkey first");
         }
         int[] path = buildHpkePath(mangled, request.index());
-        VaultResult result = vault.execute(KeyVault.FN_KEY_AGREEMENT, X25519_BASEPOINT, path);
+        VaultResult result = vault.execute(Alg.ED25519, KeyVault.FN_KEY_AGREEMENT, KeyVault.OPT_DEFAULT, X25519_BASEPOINT, path);
         if (!result.isOk()) {
             throw new IllegalStateException("HPKE pubkey derivation failed: status=" + result.status());
         }
@@ -300,7 +301,7 @@ public class NostrServiceHandler extends AbstractServiceHandler {
             throw new IllegalArgumentException("unknown HPKE pubkey — call mls_hpke_pubkey_at first");
         }
         int[] path = buildHpkePath(info.mangledIdentity(), info.index());
-        VaultResult result = vault.execute(KeyVault.FN_KEY_AGREEMENT, request.peerPublic(), path);
+        VaultResult result = vault.execute(Alg.ED25519, KeyVault.FN_KEY_AGREEMENT, KeyVault.OPT_DEFAULT, request.peerPublic(), path);
         if (!result.isOk()) {
             throw new IllegalStateException("HPKE DH failed: status=" + result.status());
         }
@@ -319,7 +320,7 @@ public class NostrServiceHandler extends AbstractServiceHandler {
             throw new IllegalArgumentException("unknown HPKE pubkey — call mls_hpke_pubkey_at first");
         }
         int[] path = buildHpkePath(info.mangledIdentity(), info.index());
-        VaultResult result = vault.execute(KeyVault.FN_KEY_AGREEMENT, request.peerPublic(), path);
+        VaultResult result = vault.execute(Alg.ED25519, KeyVault.FN_KEY_AGREEMENT, KeyVault.OPT_DEFAULT, request.peerPublic(), path);
         if (!result.isOk()) {
             throw new IllegalStateException("HPKE decap failed: status=" + result.status());
         }
@@ -354,7 +355,7 @@ public class NostrServiceHandler extends AbstractServiceHandler {
                 nextIndex = -1;
                 for (int i = 0; i < 1000; i++) {
                     int[] path = buildHpkePath(mangled, i);
-                    VaultResult r = vault.execute(KeyVault.FN_KEY_AGREEMENT, X25519_BASEPOINT, path);
+                    VaultResult r = vault.execute(Alg.ED25519, KeyVault.FN_KEY_AGREEMENT, KeyVault.OPT_DEFAULT, X25519_BASEPOINT, path);
                     if (r.isOk() && Arrays.equals(r.data(), request.currentHpkePubkey())) {
                         nextIndex = i + 1;
                         break;
@@ -367,7 +368,7 @@ public class NostrServiceHandler extends AbstractServiceHandler {
         }
 
         int[] path = buildHpkePath(mangled, nextIndex);
-        VaultResult result = vault.execute(KeyVault.FN_KEY_AGREEMENT, X25519_BASEPOINT, path);
+        VaultResult result = vault.execute(Alg.ED25519, KeyVault.FN_KEY_AGREEMENT, KeyVault.OPT_DEFAULT, X25519_BASEPOINT, path);
         if (!result.isOk()) {
             throw new IllegalStateException("next HPKE init key failed: status=" + result.status());
         }
@@ -387,7 +388,7 @@ public class NostrServiceHandler extends AbstractServiceHandler {
      * finite set of them to resolve up front.
      */
     private int[] mlsSignPath(int mangledIdentity) {
-        int signAlg = new AlgField(AlgField.ALG_ED25519, 0, AlgField.ROLE_SIGN).toIndex();
+        int signAlg = new UseField(0, IdentityPaths.MLS_SIGN).toIndex();
         for (KeyEntry key : mlsKeys) {
             int[] path = key.toVaultPath();
             if (path.length == 5
@@ -401,7 +402,7 @@ public class NostrServiceHandler extends AbstractServiceHandler {
 
     /**
      * Build the MLS Ed25519 signing key path from a pre-computed mangled identity.
-     * {@code m/44'/1242'/mangle'/AlgField(ED25519,0,ROLE_SIGN)'/ConfigField(NONE,0)'}
+     * {@code m/44'/1242'/mangle'/0'/0'} (MLS signing role, {@code Alg.ED25519})
      */
     private static int[] buildMlsSignPath(int mangledIdentity) {
         return IdentityPaths.mlsSignFor(mangledIdentity);
@@ -423,7 +424,7 @@ public class NostrServiceHandler extends AbstractServiceHandler {
      */
     private KeyEntry findKeyByPubkey(byte[] publicKey) {
         for (KeyEntry key : keys) {
-            VaultResult pubResult = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, key.toVaultPath());
+            VaultResult pubResult = vault.execute(key.alg(), KeyVault.FN_GET_PUBLIC_KEY, KeyVault.OPT_DEFAULT, null, key.toVaultPath());
             if (!pubResult.isOk()) {
                 continue;
             }
@@ -442,7 +443,7 @@ public class NostrServiceHandler extends AbstractServiceHandler {
      * @return the raw 32-byte shared x-coordinate
      */
     private byte[] doEcdh(KeyEntry key, byte[] peerPublicKey) {
-        VaultResult result = vault.execute(KeyVault.FN_KEY_AGREEMENT, peerPublicKey, key.toVaultPath());
+        VaultResult result = vault.execute(key.alg(), KeyVault.FN_KEY_AGREEMENT, KeyVault.OPT_DEFAULT, peerPublicKey, key.toVaultPath());
         if (!result.isOk()) {
             throw new IllegalStateException("ECDH failed: status=" + result.status());
         }

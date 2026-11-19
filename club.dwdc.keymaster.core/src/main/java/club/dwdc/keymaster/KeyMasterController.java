@@ -1,6 +1,6 @@
 package club.dwdc.keymaster;
 
-import club.dwdc.keyvault.core.AlgField;
+import club.dwdc.keyvault.core.Alg;
 import club.dwdc.keyvault.core.Bip32KeyDerivator;
 import club.dwdc.keyvault.core.ConfigField;
 import club.dwdc.keyvault.core.KeyVault;
@@ -80,7 +80,7 @@ public class KeyMasterController {
 
         String[] roleNames = {"certification", "signing"};
         List<HDPath> gpgPaths = new ArrayList<>();
-        for (int role = 0; role < roleNames.length; role++) {
+        for (int role = IdentityPaths.OPENPGP_CERTIFICATION; role < roleNames.length; role++) {
             gpgPaths.add(IdentityPaths.hdPath(IdentityPaths.gpg(id, role)));
         }
 
@@ -94,7 +94,8 @@ public class KeyMasterController {
         if (keyStore != null) {
             // Desktop path — generic KeyEntry
             keyStore.addIdentity(identity);
-            keyStore.addKey(new KeyEntry(sshHdPath, Map.of("comment", identity)));
+            keyStore.addKey(new KeyEntry(sshHdPath, Map.of("comment", identity,
+                    KeyEntry.ALG, Alg.ED25519.name())));
             for (int role = 0; role < roleNames.length; role++) {
                 keyStore.addKey(new KeyEntry(gpgPaths.get(role), Map.of(
                         "label", identity + " / " + roleNames[role],
@@ -102,10 +103,13 @@ public class KeyMasterController {
                         "identity", identity,
                         "creation_time", String.valueOf(creationTime),
                         "pgp_name", pgpName,
-                        "pgp_email", pgpEmail)));
+                        "pgp_email", pgpEmail,
+                        KeyEntry.ALG, Alg.ED25519.name())));
             }
-            keyStore.addKey(new KeyEntry(nostrHdPath, Map.of("identity", identity)));
-            keyStore.addKey(new KeyEntry(mlsHdPath, Map.of("identity", identity)));
+            keyStore.addKey(new KeyEntry(nostrHdPath, Map.of("identity", identity,
+                    KeyEntry.ALG, Alg.SECP256K1.name())));
+            keyStore.addKey(new KeyEntry(mlsHdPath, Map.of("identity", identity,
+                    KeyEntry.ALG, Alg.ED25519.name())));
 
             // X.509 keys of the template roles. Never overwrite: an existing
             // entry may already hold a certificate (X509CertSlot). No label is
@@ -113,7 +117,8 @@ public class KeyMasterController {
             for (X509Role role : X509Role.TEMPLATE) {
                 HDPath x509HdPath = IdentityPaths.hdPath(IdentityPaths.x509(id, role));
                 if (keyStore.getKey(x509HdPath) == null) {
-                    keyStore.addKey(new KeyEntry(x509HdPath, Map.of("identity", identity)));
+                    keyStore.addKey(new KeyEntry(x509HdPath, Map.of("identity", identity,
+                            KeyEntry.ALG, Alg.P256.name())));
                 }
             }
         } else if (kvStore != null) {
@@ -125,7 +130,7 @@ public class KeyMasterController {
             }
             // Derive Nostr pubkey for the NostrKeyEntry
             int[] nostrPath = IdentityPaths.nostr(id);
-            byte[] compressed = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, nostrPath).data();
+            byte[] compressed = vault.execute(Alg.SECP256K1, KeyVault.FN_GET_PUBLIC_KEY, KeyVault.OPT_DEFAULT, null, nostrPath).data();
             String pubkeyHex = NostrUtil.bytesToHex(Arrays.copyOfRange(compressed, 1, 33));
             kvStore.put(new NostrKeyEntry(nostrHdPath, identity, pubkeyHex));
         } else {
@@ -134,7 +139,7 @@ public class KeyMasterController {
 
         // Derive pubkey from vault (no private key export)
         int[] nostrPath = IdentityPaths.nostr(id);
-        byte[] compressedPub = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, nostrPath).data();
+        byte[] compressedPub = vault.execute(Alg.SECP256K1, KeyVault.FN_GET_PUBLIC_KEY, KeyVault.OPT_DEFAULT, null, nostrPath).data();
         String pubkey = NostrUtil.bytesToHex(Arrays.copyOfRange(compressedPub, 1, 33));
 
         log.info("Identity created: {}", pubkey);

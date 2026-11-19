@@ -5,7 +5,8 @@ import java.util.List;
 /**
  * The X.509 key roles — one table for both the derivation path and the label.
  *
- * <p>{@link #number()} is the role byte of the path's {@code AlgField}, so it
+ * <p>{@link #number()} is the role byte of the path's {@code use'} level
+ * (keyvault {@code UseField}, bits 7–0), so it
  * is part of a frozen identity path ({@link IdentityPaths#x509}) and
  * <b>can never change</b>. {@link #token()} is the suffix of the generated
  * label ({@link IdentityPaths#x509Label}); changing it changes every label of
@@ -22,7 +23,11 @@ public enum X509Role {
     TLS_SERVER(1, "tls-server", "1.3.6.1.5.5.7.3.1"),     // serverAuth
     TLS_CLIENT(2, "tls-client", "1.3.6.1.5.5.7.3.2"),     // clientAuth
     CODE_SIGNING(3, "code-signing", "1.3.6.1.5.5.7.3.3"), // codeSigning
-    SMIME(4, "smime", "1.3.6.1.5.5.7.3.4");               // emailProtection
+    SMIME(4, "smime", "1.3.6.1.5.5.7.3.4"),               // emailProtection; signs and decrypts
+    SMIME_ENCRYPT(5, "smime-encrypt", "1.3.6.1.5.5.7.3.4"); // emailProtection; decrypt only
+
+    // Roles 0-3 are sign-only and 5 is key-agreement-only in keyvault 0.6.0's
+    // binding check; new roles (IPsec next) start at 6.
 
     /**
      * The roles every identity gets: {@code createIdentity} registers these,
@@ -40,7 +45,7 @@ public enum X509Role {
         this.ekuOid = ekuOid;
     }
 
-    /** The {@code AlgField} role byte. Frozen. */
+    /** The {@code use'} role byte. Frozen. */
     public int number() {
         return number;
     }

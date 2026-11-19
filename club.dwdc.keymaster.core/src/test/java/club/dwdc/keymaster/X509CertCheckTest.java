@@ -24,10 +24,14 @@ class X509CertCheckTest {
 
     private static final Identity ALICE = new Identity("alice@atlanta.com");
 
-    /** 37.1.1's pinned P-256 vector at m/44'/1240'/1955269225'/196866'/0'. */
+    /**
+     * Alice's P-256 key at m/44'/1240'/1955269225'/2'/0' (keyvault 0.6.0, SLIP-10),
+     * pinned in keyvault's GoldenPathTest and computed independently by
+     * keyvault/tools/slip10_ref.py. Before 0.9.0: path 196866', point 04b99b60…a81a2a81.
+     */
     private static final String ALICE_TLS_CLIENT_POINT =
-            "04b99b60d501f8c4410839779fbea199d87b83dd675ffba53223529adfd0f05ac8"
-            + "3c199adda4b7b7aaad50afd3ed4b230361e6ce56ea78790707cb7d84a81a2a81";
+            "04c668dd0ec2699cd16e97b2a8a0dc6631b078309c1263757621234186e93db4d7"
+            + "70dbaa62e4036255300087d5c43e872cd6fb242a9f87a80786643da9067a53f6";
 
     private static Bip32KeyVault vault;
 
