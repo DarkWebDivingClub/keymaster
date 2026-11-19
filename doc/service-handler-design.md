@@ -295,6 +295,55 @@ sequenceDiagram
     C->>R: kind 27235 response event
 ```
 
+### Sender binding
+
+`NostrTransport` dispatches an event on a service channel only if both hold:
+
+1. it decrypts with that channel's KM key
+   (`connector path / mangle(service) / 0`), and
+2. its `pubkey` equals the channel's `avatarServicePubKeyHex`: the avatar's
+   key for the same service, derived from the avatar login xpub at
+   `mangle(service) / 0`.
+
+The two checks do different jobs:
+
+- **Decryption authenticates `event.pubkey`.** The NIP-44 conversation key
+  is ECDH(KM channel key, `event.pubkey`). Only the holder of the private
+  key for `event.pubkey` can produce a ciphertext that decrypts. The event
+  signature is not needed for this.
+- **The equality check binds that key to the channel.** An event from the
+  avatar's gpg key never reaches the ssh handler, even when it is encrypted
+  to KM's ssh channel key.
+
+On a mismatch the event is dropped. A warning is logged with the event id,
+the sender and the channel type, but not the content. No response is sent.
+
+The check fails closed: a channel without an `avatarServicePubKeyHex`
+dispatches nothing.
+
+The check applies to everything decrypted with a channel key, so responses
+arriving on a channel are bound the same way. Covered by
+`NostrTransportTest.serviceRequestFromAnotherChannelsAvatarKeyIsDropped`,
+with `serviceRequestFromTheChannelsOwnAvatarKeyIsDispatched` as its
+positive control.
+
+```mermaid
+flowchart TD
+    E[relay event] --> K{kind 27235?}
+    K -- no --> X0[ignore]
+    K -- yes --> R{decrypts with root key?}
+    R -- yes --> M1{has method?}
+    M1 -- yes --> X1[warn: root requests not served]
+    M1 -- no --> RESP[complete pending request by e-tag reply]
+    R -- no --> C{decrypts with a service channel key?}
+    C -- no --> X2[debug log, drop]
+    C -- yes --> B{"event.pubkey == channel.avatarServicePubKeyHex?"}
+    B -- "no, or field missing" --> X3[warn without content, drop, no response]
+    B -- yes --> M2{has method?}
+    M2 -- yes --> D[strip service prefix, dispatch via NipxxConnector]
+    M2 -- no --> RESP
+```
+
 ## Design
 
 ### Typed service handlers

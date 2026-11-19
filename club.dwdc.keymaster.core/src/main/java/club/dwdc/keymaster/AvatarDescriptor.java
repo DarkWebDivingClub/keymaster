@@ -12,18 +12,23 @@ import java.util.List;
 
 /**
  * Describes an Avatar endpoint: its relay URL, login xpub (BIP-32 extended
- * public key), and the services it supports.
+ * public key), the services it supports, and optional RFCOMM transport fields.
  *
- * @param relay      Nostr relay WebSocket URL (e.g. "ws://localhost:7777")
- * @param loginXpub  Avatar's BIP-32 extended public key (Base58Check "xpub...")
- * @param services   service identifiers the Avatar supports (e.g. "ssh", "nostr")
+ * @param relay        Nostr relay WebSocket URL (e.g. "ws://localhost:7777")
+ * @param loginXpub    Avatar's BIP-32 extended public key (Base58Check "xpub...")
+ * @param services     service identifiers the Avatar supports (e.g. "ssh", "nostr")
+ * @param btAddr       Bluetooth address of the avatar machine (e.g. "28:6B:35:B4:BA:85"), or null for WebSocket mode
+ * @param rfcommChannel RFCOMM channel number (default 3), only used when btAddr is set
  */
 public record AvatarDescriptor(
         String relay,
         String loginXpub,
-        List<String> services
+        List<String> services,
+        String btAddr,
+        int rfcommChannel
 ) {
     private static final Gson GSON = new GsonBuilder().create();
+    private static final int DEFAULT_RFCOMM_CHANNEL = 3;
 
     public AvatarDescriptor {
         if (relay == null || relay.isBlank()) {
@@ -37,6 +42,19 @@ public record AvatarDescriptor(
         } else {
             services = List.copyOf(services);
         }
+        if (rfcommChannel <= 0) {
+            rfcommChannel = DEFAULT_RFCOMM_CHANNEL;
+        }
+    }
+
+    /** Convenience constructor for WebSocket-only descriptors (backward compatible). */
+    public AvatarDescriptor(String relay, String loginXpub, List<String> services) {
+        this(relay, loginXpub, services, null, DEFAULT_RFCOMM_CHANNEL);
+    }
+
+    /** True when this descriptor specifies RFCOMM transport. */
+    public boolean isRfcomm() {
+        return btAddr != null && !btAddr.isBlank();
     }
 
     /**
@@ -71,7 +89,9 @@ public record AvatarDescriptor(
         return new AvatarDescriptor(
                 raw.relay,
                 xpub,
-                raw.services != null ? raw.services : List.of()
+                raw.services != null ? raw.services : List.of(),
+                raw.bt_addr,
+                raw.rfcomm_channel > 0 ? raw.rfcomm_channel : DEFAULT_RFCOMM_CHANNEL
         );
     }
 
@@ -92,5 +112,7 @@ public record AvatarDescriptor(
         String login_xpub;
         String pubkey;  // legacy field name
         List<String> services;
+        String bt_addr;
+        int rfcomm_channel;
     }
 }

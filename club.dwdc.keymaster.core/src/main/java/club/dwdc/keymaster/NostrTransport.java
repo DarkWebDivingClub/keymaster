@@ -1,5 +1,6 @@
 package club.dwdc.keymaster;
 
+import club.dwdc.keyvault.core.Alg;
 import club.dwdc.keyvault.core.Bip32KeyDerivator;
 import club.dwdc.keyvault.core.KeyVault;
 import club.dwdc.keyvault.core.VaultResult;
@@ -62,13 +63,12 @@ public class NostrTransport {
     private final TransportSigner signer;
     private final String pubKeyHex;
 
-    private NostrRelayClient relayClient;
+    private RelayClient relayClient;
     private String attachEventId;
 
     /** Vault and realm base path for deriving service channel keys. */
     private KeyVault vault;
-    private int[] realmBasePath;
-    private int realmIndex;
+    private int[] connectorPath;
 
     private final ConcurrentHashMap<String, CompletableFuture<JsonObject>> pendingResponses =
             new ConcurrentHashMap<>();
@@ -138,22 +138,22 @@ public class NostrTransport {
 
     /**
      * Set the vault and realm base path for deterministic service channel derivation.
-     * Service channel keys are derived at: realmBasePath / realmIndex / protocolIdx / seq
+     * Service channel keys are derived at: connectorPath / protocolIdx / seq
      */
-    public void setRealmVault(KeyVault vault, int[] realmBasePath, int realmIndex) {
+    public void setRealmVault(KeyVault vault, int[] connectorPath) {
         this.vault = vault;
-        this.realmBasePath = realmBasePath;
-        this.realmIndex = realmIndex;
+        this.connectorPath = connectorPath;
     }
 
     /**
-     * Connect to the Nostr relay and subscribe to events addressed to our pubkey.
+     * Connect using the given relay client and subscribe to events addressed to our pubkey.
      */
-    public void connect(String relayUrl) throws InterruptedException {
-        this.relayClient = new NostrRelayClient(relayUrl, new NostrRelayClient.Listener() {
+    public void connect(RelayClient client) throws Exception {
+        this.relayClient = client;
+        client.setListener(new RelayClient.Listener() {
             @Override
             public void onConnected() {
-                log.info("Connected to relay: {}", relayUrl);
+                log.info("Connected to relay");
                 fireConnectionState(ConnectionState.CONNECTED);
             }
 
@@ -175,7 +175,7 @@ public class NostrTransport {
             }
         });
 
-        relayClient.connect();
+        client.connect();
         Thread.sleep(500);
 
         String subId = "km-" + System.currentTimeMillis();
@@ -249,8 +249,9 @@ public class NostrTransport {
      * Derive service channel keypairs from the exchanged xpubs.
      * Both sides compute the same channel pubkeys independently.
      */
-    private void deriveServiceChannels(String avatarLoginXpub, List<String> services) {
-        if (vault == null || realmBasePath == null) {
+    // Package-private for NostrTransportTest.
+    void deriveServiceChannels(String avatarLoginXpub, List<String> services) {
+        if (vault == null || connectorPath == null) {
             log.warn("No realm vault/path set — cannot derive service channels");
             return;
         }
@@ -261,11 +262,11 @@ public class NostrTransport {
                 int protocolIdx = Bip32KeyDerivator.mangle(serviceType);
                 int seq = 0;
 
-                // Build extended vault path: realmBasePath / realmIndex / protocolIdx / seq
-                int[] svcPath = extendPath(realmBasePath, realmIndex, protocolIdx, seq);
+                // Build extended vault path: connectorPath / protocolIdx / seq
+                int[] svcPath = extendPath(connectorPath, protocolIdx, seq);
 
                 // Derive our (KM) service channel public key from vault
-                VaultResult pubResult = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, svcPath);
+                VaultResult pubResult = vault.execute(Alg.SECP256K1, KeyVault.FN_GET_PUBLIC_KEY, KeyVault.OPT_DEFAULT, null, svcPath);
                 if (!pubResult.isOk()) {
                     log.error("Failed to derive service pubkey for {}: status {}",
                             serviceType, pubResult.status());
@@ -444,7 +445,8 @@ public class NostrTransport {
         }
     }
 
-    private void handleIncomingEvent(JsonObject event) {
+    // Package-private for NostrTransportTest.
+    void handleIncomingEvent(JsonObject event) {
         try {
             int kind = event.get("kind").getAsInt();
             if (kind != PROTOCOL_KIND) return;
@@ -475,6 +477,17 @@ public class NostrTransport {
 
             if (plaintext == null) {
                 log.debug("Could not decrypt event {} from {}", eventId, senderPubKey);
+                return;
+            }
+
+            // Sender binding: decryption proves the sender holds event.pubkey's
+            // private key (NIP-44 conversation key = ECDH(channel key, event.pubkey));
+            // this binds that key to the channel. Fails closed if the channel has
+            // no avatar key. Content is not logged.
+            if (matchedChannel != null
+                    && !senderPubKey.equals(matchedChannel.avatarServicePubKeyHex)) {
+                log.warn("Dropping event {}: sender {} is not the avatar key of service channel {}",
+                        eventId, senderPubKey, matchedChannel.serviceType);
                 return;
             }
 
@@ -684,7 +697,7 @@ public class NostrTransport {
      */
     private String encryptViaVault(String plaintext, byte[] recipientPubKey, int[] vaultPath)
             throws Exception {
-        VaultResult ecdhResult = vault.execute(KeyVault.FN_KEY_AGREEMENT, recipientPubKey, vaultPath);
+        VaultResult ecdhResult = vault.execute(Alg.SECP256K1, KeyVault.FN_KEY_AGREEMENT, KeyVault.OPT_DEFAULT, recipientPubKey, vaultPath);
         if (!ecdhResult.isOk()) {
             throw new RuntimeException("Vault ECDH failed: status " + ecdhResult.status());
         }
@@ -698,7 +711,7 @@ public class NostrTransport {
      */
     private String decryptViaVault(String ciphertext, byte[] senderPubKey, int[] vaultPath)
             throws Exception {
-        VaultResult ecdhResult = vault.execute(KeyVault.FN_KEY_AGREEMENT, senderPubKey, vaultPath);
+        VaultResult ecdhResult = vault.execute(Alg.SECP256K1, KeyVault.FN_KEY_AGREEMENT, KeyVault.OPT_DEFAULT, senderPubKey, vaultPath);
         if (!ecdhResult.isOk()) {
             throw new RuntimeException("Vault ECDH failed: status " + ecdhResult.status());
         }
@@ -711,7 +724,7 @@ public class NostrTransport {
      */
     private String signViaVault(String eventIdHex, int[] vaultPath) throws Exception {
         byte[] eventIdBytes = NostrUtil.hexToBytes(eventIdHex);
-        VaultResult sigResult = vault.execute(KeyVault.FN_SIGN, eventIdBytes, vaultPath);
+        VaultResult sigResult = vault.execute(Alg.SECP256K1, KeyVault.FN_SIGN, KeyVault.OPT_SECP256K1_SCHNORR, eventIdBytes, vaultPath);
         if (!sigResult.isOk()) {
             throw new RuntimeException("Vault sign failed: status " + sigResult.status());
         }

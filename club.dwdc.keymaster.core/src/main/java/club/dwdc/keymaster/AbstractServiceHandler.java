@@ -29,6 +29,14 @@ public abstract class AbstractServiceHandler {
     }
 
     /**
+     * The key paths this handler may use. Immutable, bound at construction:
+     * it is the handler's enforcement boundary, not merely its inventory.
+     */
+    public List<KeyEntry> keys() {
+        return keys;
+    }
+
+    /**
      * Check approval for a service method invocation.
      *
      * <p>APPROVE falls through, DENY throws {@link RequestDeniedException},

@@ -1,6 +1,6 @@
 package club.dwdc.keymaster;
 
-import club.dwdc.keyvault.core.AlgField;
+import club.dwdc.keyvault.core.Alg;
 import club.dwdc.keyvault.core.Bip32KeyDerivator;
 import club.dwdc.keyvault.core.ConfigField;
 import club.dwdc.keyvault.core.KeyVault;
@@ -14,13 +14,16 @@ import org.bitcoinj.crypto.HDPath;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.function.BiConsumer;
 import java.util.function.Consumer;
-import java.util.function.Predicate;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
@@ -36,9 +39,13 @@ public class KeyMasterController {
     private static final int H = 0x80000000;
 
     private final KeyMaster km;
+
+    /** Serializes realm id and default-name allocation; see createRealm. */
+    private final Object realmAllocation = new Object();
+    private final SecureRandom realmIds = new SecureRandom();
     private ApprovalHandler approvalHandler;
-    private String currentIdentity;
     private Consumer<NostrTransport.ConnectionState> connectionStateListener;
+    private Function<AvatarDescriptor, RelayClient> relayClientFactory;
 
     /**
      * Create a controller wrapping a KeyMaster.
@@ -68,42 +75,17 @@ public class KeyMasterController {
         KeyVault vault = km.vault;
         int mangledIdentity = Bip32KeyDerivator.mangle(identity);
 
-        // Build HD paths
-        HDPath sshHdPath = HDPath.m(
-                new ChildNumber(44, true),
-                new ChildNumber(Protocol.SSH.coinType(), true),
-                new ChildNumber(mangledIdentity, true),
-                new ChildNumber(new AlgField(AlgField.ALG_ED25519, 0, 0).toIndex(), true),
-                new ChildNumber(new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex(), true)
-        );
+        Identity id = new Identity(identity);
+        HDPath sshHdPath = IdentityPaths.hdPath(IdentityPaths.ssh(id));
 
         String[] roleNames = {"certification", "signing"};
         List<HDPath> gpgPaths = new ArrayList<>();
-        for (int role = 0; role < roleNames.length; role++) {
-            gpgPaths.add(HDPath.m(
-                    new ChildNumber(44, true),
-                    new ChildNumber(Protocol.OPENPGP.coinType(), true),
-                    new ChildNumber(mangledIdentity, true),
-                    new ChildNumber(new AlgField(AlgField.ALG_ED25519, 0, role).toIndex(), true),
-                    new ChildNumber(new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex(), true)
-            ));
+        for (int role = IdentityPaths.OPENPGP_CERTIFICATION; role < roleNames.length; role++) {
+            gpgPaths.add(IdentityPaths.hdPath(IdentityPaths.gpg(id, role)));
         }
 
-        HDPath nostrHdPath = HDPath.m(
-                new ChildNumber(44, true),
-                new ChildNumber(Protocol.NOSTR.coinType(), true),
-                new ChildNumber(mangledIdentity, true),
-                new ChildNumber(new AlgField(AlgField.ALG_SCHNORR, 0, 0).toIndex(), true),
-                new ChildNumber(new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex(), true)
-        );
-
-        HDPath mlsHdPath = HDPath.m(
-                new ChildNumber(44, true),
-                new ChildNumber(Protocol.MLS.coinType(), true),
-                new ChildNumber(mangledIdentity, true),
-                new ChildNumber(new AlgField(AlgField.ALG_ED25519, 0, AlgField.ROLE_SIGN).toIndex(), true),
-                new ChildNumber(new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex(), true)
-        );
+        HDPath nostrHdPath = IdentityPaths.hdPath(IdentityPaths.nostr(id));
+        HDPath mlsHdPath = IdentityPaths.hdPath(IdentityPaths.mlsSign(id));
 
         // Store via whichever metadata store is available
         KeyMetaDataStore keyStore = km.keyMetaDataStore;
@@ -112,7 +94,8 @@ public class KeyMasterController {
         if (keyStore != null) {
             // Desktop path — generic KeyEntry
             keyStore.addIdentity(identity);
-            keyStore.addKey(new KeyEntry(sshHdPath, Map.of("comment", identity)));
+            keyStore.addKey(new KeyEntry(sshHdPath, Map.of("comment", identity,
+                    KeyEntry.ALG, Alg.ED25519.name())));
             for (int role = 0; role < roleNames.length; role++) {
                 keyStore.addKey(new KeyEntry(gpgPaths.get(role), Map.of(
                         "label", identity + " / " + roleNames[role],
@@ -120,10 +103,24 @@ public class KeyMasterController {
                         "identity", identity,
                         "creation_time", String.valueOf(creationTime),
                         "pgp_name", pgpName,
-                        "pgp_email", pgpEmail)));
+                        "pgp_email", pgpEmail,
+                        KeyEntry.ALG, Alg.ED25519.name())));
             }
-            keyStore.addKey(new KeyEntry(nostrHdPath, Map.of("identity", identity)));
-            keyStore.addKey(new KeyEntry(mlsHdPath, Map.of("identity", identity)));
+            keyStore.addKey(new KeyEntry(nostrHdPath, Map.of("identity", identity,
+                    KeyEntry.ALG, Alg.SECP256K1.name())));
+            keyStore.addKey(new KeyEntry(mlsHdPath, Map.of("identity", identity,
+                    KeyEntry.ALG, Alg.ED25519.name())));
+
+            // X.509 keys of the template roles. Never overwrite: an existing
+            // entry may already hold a certificate (X509CertSlot). No label is
+            // stored — it is generated by IdentityPaths.x509Label.
+            for (X509Role role : X509Role.TEMPLATE) {
+                HDPath x509HdPath = IdentityPaths.hdPath(IdentityPaths.x509(id, role));
+                if (keyStore.getKey(x509HdPath) == null) {
+                    keyStore.addKey(new KeyEntry(x509HdPath, Map.of("identity", identity,
+                            KeyEntry.ALG, Alg.P256.name())));
+                }
+            }
         } else if (kvStore != null) {
             // Android path — typed key entries
             kvStore.put(new SSHKeyEntry(sshHdPath, identity, identity));
@@ -132,15 +129,8 @@ public class KeyMasterController {
                         pgpName, pgpEmail, creationTime));
             }
             // Derive Nostr pubkey for the NostrKeyEntry
-            int identityIndex = mangledIdentity | H;
-            int[] nostrPath = {
-                    44 | H,
-                    Protocol.NOSTR.coinType() | H,
-                    identityIndex,
-                    new AlgField(AlgField.ALG_SCHNORR, 0, 0).toIndex() | H,
-                    new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex() | H
-            };
-            byte[] compressed = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, nostrPath).data();
+            int[] nostrPath = IdentityPaths.nostr(id);
+            byte[] compressed = vault.execute(Alg.SECP256K1, KeyVault.FN_GET_PUBLIC_KEY, KeyVault.OPT_DEFAULT, null, nostrPath).data();
             String pubkeyHex = NostrUtil.bytesToHex(Arrays.copyOfRange(compressed, 1, 33));
             kvStore.put(new NostrKeyEntry(nostrHdPath, identity, pubkeyHex));
         } else {
@@ -148,15 +138,8 @@ public class KeyMasterController {
         }
 
         // Derive pubkey from vault (no private key export)
-        int identityIndex = mangledIdentity | H;
-        int[] nostrPath = {
-                44 | H,
-                Protocol.NOSTR.coinType() | H,
-                identityIndex,
-                new AlgField(AlgField.ALG_SCHNORR, 0, 0).toIndex() | H,
-                new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex() | H
-        };
-        byte[] compressedPub = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, nostrPath).data();
+        int[] nostrPath = IdentityPaths.nostr(id);
+        byte[] compressedPub = vault.execute(Alg.SECP256K1, KeyVault.FN_GET_PUBLIC_KEY, KeyVault.OPT_DEFAULT, null, nostrPath).data();
         String pubkey = NostrUtil.bytesToHex(Arrays.copyOfRange(compressedPub, 1, 33));
 
         log.info("Identity created: {}", pubkey);
@@ -166,185 +149,247 @@ public class KeyMasterController {
     /**
      * Set an approval handler for incoming service requests.
      *
-     * <p>When set, every service request is passed through the handler before
-     * processing. If a realm is already active, propagates to all handlers
-     * with per-service-type adapters.
+     * <p>Propagated to every live realm, which re-wires its handlers' approval
+     * UI in place rather than rebuilding them.
      *
      * @param handler approval handler, or {@code null} to auto-approve
      */
     public void setApprovalHandler(ApprovalHandler handler) {
         this.approvalHandler = handler;
-        if (currentIdentity != null) {
-            Realm realm = km.realms.get(currentIdentity);
-            if (realm != null) {
-                for (int coinType : realm.getHandlerCoinTypes()) {
-                    AbstractServiceHandler h = realm.getHandler(coinType);
-                    if (h != null) {
-                        String serviceType = coinType == Protocol.SSH.coinType() ? "ssh" : "gpg";
-                        h.setApprovalUI(handler != null
-                                ? new ApprovalHandlerAdapter(handler, serviceType)
-                                : null);
-                    }
+        km.realms.values().forEach(realm -> realm.setApprovalHandler(handler));
+    }
+
+    /**
+     * The approval handler in force, or {@code null} if every request is
+     * auto-approved.
+     *
+     * @return the current handler
+     */
+    public ApprovalHandler approvalHandler() {
+        return approvalHandler;
+    }
+
+    /**
+     * Create a realm: an identity scope that can then be attached to one or
+     * more avatars.
+     *
+     * <p>The realm id is 31 bits from {@link SecureRandom}, redrawn while the
+     * value is already in use. It is random rather than a counter or a
+     * timestamp because two realms created in the same millisecond would
+     * otherwise share a realm key, and a clock stepped backwards could revive
+     * a dead realm's keys.
+     *
+     * @param name            user-facing name; when blank, the primary
+     *                        identity's local part is used, with a numeric
+     *                        suffix on collision
+     * @param primaryIdentity the primary identity, whose Nostr key signs the
+     *                        handshake; must appear in {@code selections}
+     * @param selections      what the realm serves, one row per identity
+     * @return the new realm
+     */
+    public Realm createRealm(String name, Identity primaryIdentity,
+                             List<IdentitySelection> selections) {
+        Realm realm;
+        // Both the id and the default name are chosen by looking at the realms
+        // that exist, so choosing and registering has to be one step: two
+        // concurrent creates would otherwise pass the same check and the
+        // second would either take the first's name or, far less likely but
+        // far worse, its id — replacing a live realm in the map. Removal needs
+        // no lock, since it only ever frees an id or a name.
+        synchronized (realmAllocation) {
+            int realmId = nextRealmId();
+            String realmName = (name == null || name.isBlank())
+                    ? uniqueDefaultName(primaryIdentity)
+                    : name;
+
+            realm = new Realm(realmId, realmName, selections, primaryIdentity,
+                    km.vault, availableKeys(), approvalHandler,
+                    km.keyMetaDataStore); // null on Android: no X.509 cert slots yet (37.2)
+            if (connectionStateListener != null) {
+                realm.setConnectionStateListener(connectionStateListener);
+            }
+            if (relayClientFactory != null) {
+                realm.setRelayClientFactory(relayClientFactory);
+            }
+            km.realms.put(realmId, realm);
+        }
+        log.info("Realm created: id={} name={} identities={}",
+                realm.id(), realm.name(), realm.identityNames());
+        return realm;
+    }
+
+    /** Create a realm serving all protocols of a single identity. */
+    public Realm createRealm(String name, Identity primaryIdentity) {
+        return createRealm(name, primaryIdentity,
+                List.of(new IdentitySelection(primaryIdentity)));
+    }
+
+    /**
+     * Add a connector to an existing realm — the "connect to an existing realm"
+     * outcome of a QR scan.
+     *
+     * @param realmId    the realm to join
+     * @param descriptor avatar descriptor from the scan
+     * @return the connector id and the attach event id
+     */
+    public Realm.AttachResult attachToRealm(int realmId, AvatarDescriptor descriptor)
+            throws Exception {
+        Realm realm = requireRealm(realmId);
+        Realm.AttachResult result = realm.attach(descriptor);
+
+        // A concurrent detach can remove the realm between the lookup above and
+        // the attach completing, which would leave a live connector on a realm
+        // nothing can reach. Detect it and undo rather than leak.
+        if (km.realms.get(realmId) != realm) {
+            log.warn("Realm {} was removed while attaching; undoing connector {}",
+                    realmId, result.connectorId());
+            realm.detach(result.connectorId());
+            throw new IllegalStateException("realm " + realmId + " was detached while attaching");
+        }
+        return result;
+    }
+
+    /**
+     * Detach one connector. When this leaves its realm with no connectors, the
+     * realm is removed; emptiness alone is not the trigger, so a realm created
+     * but not yet attached survives.
+     */
+    public void detach(int realmId, int connectorId) throws Exception {
+        Realm realm = km.realms.get(realmId);
+        if (realm == null) {
+            log.warn("No realm {} to detach from", realmId);
+            return;
+        }
+        realm.detach(connectorId);
+        if (!realm.hasConnectors()) {
+            km.realms.remove(realmId);
+            log.info("Realm {} removed — last connector detached", realmId);
+        }
+    }
+
+    /** Detach every connector of a realm and remove the realm. */
+    public void detachRealm(int realmId) {
+        Realm realm = km.realms.remove(realmId);
+        if (realm == null) {
+            log.warn("No realm {} to detach", realmId);
+            return;
+        }
+        realm.detachAll();
+        log.info("Realm {} detached and removed", realmId);
+    }
+
+    /** Detach every realm. */
+    public void detachAll() {
+        for (int realmId : Set.copyOf(km.realms.keySet())) {
+            detachRealm(realmId);
+        }
+    }
+
+    /** Live realms, keyed by realm id. */
+    public Map<Integer, Realm> realms() {
+        return Map.copyOf(km.realms);
+    }
+
+    /** A live realm, or {@code null}. */
+    public Realm getRealm(int realmId) {
+        return km.realms.get(realmId);
+    }
+
+    /**
+     * Attach to an avatar with a single identity: creates a realm and its first
+     * connector. Retained for single-session callers.
+     *
+     * @return the attach event id
+     */
+    public String attach(AvatarDescriptor avatar, String identity) throws Exception {
+        return attach(avatar, identity, List.of());
+    }
+
+    /**
+     * Attach to an avatar with a primary identity and additional identities,
+     * all serving every protocol: creates a realm and its first connector.
+     *
+     * <p>Replaces the former predicate-based overload. Key selection is data
+     * now, so the caller passes identities rather than lambdas — which is also
+     * what makes a multi-identity realm expressible over JSON-RPC.
+     *
+     * @return the attach event id
+     */
+    public String attach(AvatarDescriptor avatar, String identity,
+                         List<String> additionalIdentities) throws Exception {
+        Identity primary = new Identity(identity);
+        List<IdentitySelection> selections = new ArrayList<>();
+        selections.add(new IdentitySelection(primary));
+        if (additionalIdentities != null) {
+            for (String extra : additionalIdentities) {
+                if (extra != null && !extra.isBlank() && !extra.equals(identity)) {
+                    selections.add(new IdentitySelection(new Identity(extra)));
                 }
             }
         }
+
+        Realm realm = createRealm(null, primary, selections);
+        try {
+            return realm.attach(avatar).attachEventId();
+        } catch (Exception e) {
+            km.realms.remove(realm.id());
+            throw e;
+        }
     }
 
     /**
-     * Attach to an Avatar: resolve keys from store, build realm and handlers,
-     * create signer, build connector, connect.
-     *
-     * @param avatar   descriptor with relay URL, login xpub, and services
-     * @param identity the identity to attach
-     * @return attach event ID
-     * @throws IllegalStateException if no metadata store is available
+     * Detach every realm. Retained for single-session callers.
      */
-    public String attach(AvatarDescriptor avatar, String identity) throws Exception {
-        int mangledIdentity = Bip32KeyDerivator.mangle(identity);
+    public void detach() {
+        if (km.realms.isEmpty()) {
+            log.warn("No active session to detach");
+            return;
+        }
+        detachAll();
+    }
 
-        // Resolve key entries from metadata store
-        List<KeyEntry> allKeys;
+    /** Every key the metadata store holds, from whichever store is configured. */
+    private List<KeyEntry> availableKeys() {
         if (km.keyMetaDataStore != null) {
-            allKeys = km.keyMetaDataStore.keysByIdentity(mangledIdentity);
-        } else if (km.kvMetaStore != null) {
-            allKeys = km.kvMetaStore.byIdentity(identity).stream()
+            return km.keyMetaDataStore.allKeys();
+        }
+        if (km.kvMetaStore != null) {
+            return km.kvMetaStore.all().stream()
                     .map(AbstractKeyEntry::toKeyEntry)
                     .collect(Collectors.toList());
-        } else {
-            throw new IllegalStateException("Metadata store is required for attach");
         }
-        return doAttach(avatar, identity, allKeys);
+        throw new IllegalStateException("Metadata store is required to build a realm");
     }
 
-    /**
-     * Attach with additional key predicates for multi-identity scenarios.
-     * Keys matching any predicate are included in the attach.
-     *
-     * @param avatar     descriptor with relay URL, login xpub, and services
-     * @param identity   the primary identity to attach
-     * @param predicates key selection predicates (match by identity, etc.)
-     * @return attach event ID
-     */
-    public String attach(AvatarDescriptor avatar, String identity,
-                         List<Predicate<AbstractKeyEntry>> predicates) throws Exception {
-        if (km.kvMetaStore == null) {
-            return attach(avatar, identity);
+    private Realm requireRealm(int realmId) {
+        Realm realm = km.realms.get(realmId);
+        if (realm == null) {
+            throw new IllegalArgumentException("No such realm: " + realmId);
         }
-        // Collect keys from all entries matching any predicate
-        List<KeyEntry> allKeys = km.kvMetaStore.all().stream()
-                .filter(entry -> predicates.stream().anyMatch(p -> p.test(entry)))
-                .map(AbstractKeyEntry::toKeyEntry)
-                .collect(Collectors.toList());
-        return doAttach(avatar, identity, allKeys);
+        return realm;
     }
 
-    private String doAttach(AvatarDescriptor avatar, String identity,
-                            List<KeyEntry> allKeys) throws Exception {
-        this.currentIdentity = identity;
-        KeyVault vault = km.vault;
-        int mangledIdentity = Bip32KeyDerivator.mangle(identity);
-
-        List<KeyEntry> sshKeys = allKeys.stream()
-                .filter(k -> k.coinType() == Protocol.SSH.coinType())
-                .collect(Collectors.toList());
-        List<KeyEntry> gpgKeys = allKeys.stream()
-                .filter(k -> k.coinType() == Protocol.OPENPGP.coinType())
-                .collect(Collectors.toList());
-        List<KeyEntry> nostrKeys = allKeys.stream()
-                .filter(k -> k.coinType() == Protocol.NOSTR.coinType())
-                .collect(Collectors.toList());
-
-        // Build service handlers
-        SshServiceHandler sshHandler = new SshServiceHandler(vault, sshKeys);
-        GpgServiceHandler gpgHandler = new GpgServiceHandler(vault, gpgKeys);
-        NostrServiceHandler nostrHandler = new NostrServiceHandler(vault, nostrKeys);
-
-        if (approvalHandler != null) {
-            sshHandler.setApprovalUI(new ApprovalHandlerAdapter(approvalHandler, "ssh"));
-            gpgHandler.setApprovalUI(new ApprovalHandlerAdapter(approvalHandler, "gpg"));
-            nostrHandler.setApprovalUI(new ApprovalHandlerAdapter(approvalHandler, "nostr"));
-        }
-
-        // Create realm and register handlers
-        Realm realm = new Realm();
-        realm.putHandler(Protocol.SSH.coinType(), sshHandler);
-        realm.putHandler(Protocol.OPENPGP.coinType(), gpgHandler);
-        realm.putHandler(Protocol.NOSTR.coinType(), nostrHandler);
-        km.realms.put(identity, realm);
-
-        // Create vault-backed transport signer (identity key with ECDH)
-        int identityIndex = mangledIdentity | H;
-        int[] nostrPath = {
-                44 | H,
-                Protocol.NOSTR.coinType() | H,
-                identityIndex,
-                new AlgField(AlgField.ALG_SCHNORR, 0, 0).toIndex() | H,
-                new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex() | H
-        };
-
-        TransportSigner signer = new TransportSigner() {
-            @Override
-            public String getPubkey() {
-                byte[] compressed = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, nostrPath).data();
-                return NostrUtil.bytesToHex(Arrays.copyOfRange(compressed, 1, 33));
-            }
-
-            @Override
-            public byte[] sign(byte[] hash) {
-                return vault.execute(KeyVault.FN_SIGN, hash, nostrPath).data();
-            }
-
-            @Override
-            public byte[] ecdh(byte[] peerPubKey) {
-                return vault.execute(KeyVault.FN_KEY_AGREEMENT, peerPubKey, nostrPath).data();
-            }
-        };
-
-        // Derive deterministic realm key from vault (no private key export)
-        int realmSeq = 0;
-        int mangledRealm = Bip32KeyDerivator.mangle("keymaster:" + realmSeq);
-        int[] realmBasePath = {
-                44 | H,
-                Protocol.NOSTR.coinType() | H,
-                mangledRealm | H,
-                0 | H,
-                0 | H
-        };
-        // Derive xpub at realmBasePath / realmSeq so avatar derives service
-        // channels at 2 levels: protocol_index / seq (matching derive_service_pubkey)
-        int[] realmXpubPath = Arrays.copyOf(realmBasePath, realmBasePath.length + 1);
-        realmXpubPath[realmBasePath.length] = realmSeq;
-        VaultResult realmKey = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, realmXpubPath);
-        String realmXpub = HDKeyDerivation.createMasterPubKeyFromBytes(
-                realmKey.data(), realmKey.chainCode())
-                .serializePubB58(BitcoinNetwork.MAINNET);
-
-        // Create connector and connect
-        NipxxConnector conn = new NipxxConnector(realm);
-        conn.setRealmVault(vault, realmBasePath, realmSeq, realmXpub);
-        if (connectionStateListener != null) {
-            conn.setConnectionStateListener(connectionStateListener);
-        }
-        String attachId = conn.connect(avatar, signer);
-        km.connectors.put(identity, conn);
-        return attachId;
+    private int nextRealmId() {
+        int realmId;
+        do {
+            realmId = realmIds.nextInt() & 0x7FFFFFFF;
+        } while (km.realms.containsKey(realmId));
+        return realmId;
     }
 
-    /**
-     * Detach from the currently attached Avatar and close the relay connection.
-     */
-    public void detach() throws Exception {
-        if (currentIdentity == null) {
-            log.warn("No active session to detach");
-            return;
+    private String uniqueDefaultName(Identity primaryIdentity) {
+        String base = primaryIdentity.localPart();
+        String candidate = base;
+        int suffix = 1;
+        while (nameTaken(candidate)) {
+            suffix++;
+            candidate = base + "-" + suffix;
         }
-        Connector connector = km.connectors.get(currentIdentity);
-        if (connector == null) {
-            log.warn("No active session to detach");
-            return;
-        }
-        connector.disconnect();
-        km.connectors.remove(currentIdentity);
+        return candidate;
+    }
+
+    private boolean nameTaken(String candidate) {
+        return km.realms.values().stream().anyMatch(r -> candidate.equals(r.name()));
     }
 
     /**
@@ -355,64 +400,46 @@ public class KeyMasterController {
      */
     public void setConnectionStateListener(Consumer<NostrTransport.ConnectionState> listener) {
         this.connectionStateListener = listener;
+        km.realms.values().forEach(realm -> realm.setConnectionStateListener(listener));
     }
 
     /**
-     * Restore an identity in the metadata store without creating keys.
-     * Used when restoring from a QR-scanned backup.
+     * Set a connection state listener for one realm only. This is what a
+     * per-realm UI state needs; the propagate-to-all variant above remains for
+     * single-realm callers.
      *
-     * @param identity identity identifier (e.g. "alice@atlanta.com")
+     * @param realmId  the realm to listen to
+     * @param listener state consumer, or {@code null} to clear
      */
-    public void restoreIdentity(String identity) {
-        KeyMetaDataStore keyStore = km.keyMetaDataStore;
-        if (keyStore == null) {
-            throw new IllegalStateException("Metadata store is required for restoreIdentity");
-        }
-        keyStore.addIdentity(identity);
-        log.info("Identity restored: {}", identity);
+    public void setConnectionStateListener(int realmId,
+                                           Consumer<NostrTransport.ConnectionState> listener) {
+        requireRealm(realmId).setConnectionStateListener(listener);
     }
 
     /**
-     * Restore GPG key metadata entries (certification + signing) for an identity.
-     * Used when restoring from a QR-scanned backup with known creation time.
+     * Set a listener for one realm that is told which connector changed state.
      *
-     * @param identity     identity identifier
-     * @param pgpName      user's name for OpenPGP user ID
-     * @param pgpEmail     user's email for OpenPGP user ID
-     * @param creationTime key creation time (epoch seconds)
+     * <p>What a multi-avatar UI needs: with two connectors on one realm, the
+     * realm-wide listener above fires for both and cannot distinguish them, so
+     * a row per avatar cannot show its own dot. The id is the one
+     * {@link Realm.AttachResult#connectorId()} returned.
+     *
+     * @param realmId  the realm to listen to
+     * @param listener receives (connector id, state), or {@code null} to clear
      */
-    public void restoreGpgKeys(String identity, String pgpName, String pgpEmail, long creationTime) {
-        KeyMetaDataStore keyStore = km.keyMetaDataStore;
-        if (keyStore == null) {
-            throw new IllegalStateException("Metadata store is required for restoreGpgKeys");
-        }
-        int mangledIdentity = Bip32KeyDerivator.mangle(identity);
-
-        String[] roleNames = {"certification", "signing"};
-        for (int role = 0; role < roleNames.length; role++) {
-            HDPath gpgHdPath = HDPath.m(
-                    new ChildNumber(44, true),
-                    new ChildNumber(Protocol.OPENPGP.coinType(), true),
-                    new ChildNumber(mangledIdentity, true),
-                    new ChildNumber(new AlgField(AlgField.ALG_ED25519, 0, role).toIndex(), true),
-                    new ChildNumber(new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex(), true)
-            );
-            keyStore.addKey(new KeyEntry(gpgHdPath, Map.of(
-                    "label", identity + " / " + roleNames[role],
-                    "key_type", "ed25519",
-                    "identity", identity,
-                    "creation_time", String.valueOf(creationTime),
-                    "pgp_name", pgpName,
-                    "pgp_email", pgpEmail)));
-        }
-        log.info("GPG keys restored for identity: {}", identity);
+    public void setConnectorStateListener(int realmId,
+            BiConsumer<Integer, NostrTransport.ConnectionState> listener) {
+        requireRealm(realmId).setConnectorStateListener(listener);
     }
 
     /**
-     * Returns the current identity name, or {@code null}.
+     * Set a factory for creating relay clients. When set, the connector uses it
+     * instead of defaulting to {@link NostrRelayClient}. This allows the Android
+     * layer to inject an {@code RfcommRelayClient} when the descriptor has a BT address.
      */
-    public String getCurrentIdentity() {
-        return currentIdentity;
+    public void setRelayClientFactory(Function<AvatarDescriptor, RelayClient> factory) {
+        this.relayClientFactory = factory;
+        km.realms.values().forEach(realm -> realm.setRelayClientFactory(factory));
     }
 
     /**

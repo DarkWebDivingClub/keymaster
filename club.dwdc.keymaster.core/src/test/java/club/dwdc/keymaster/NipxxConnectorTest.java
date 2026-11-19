@@ -1,6 +1,7 @@
 package club.dwdc.keymaster;
 
-import club.dwdc.keyvault.core.AlgField;
+import club.dwdc.keyvault.core.Alg;
+import club.dwdc.keyvault.core.UseField;
 import club.dwdc.keyvault.core.Bip32KeyDerivator;
 import club.dwdc.keyvault.core.Bip32KeyVault;
 import club.dwdc.keyvault.core.ConfigField;
@@ -44,7 +45,7 @@ class NipxxConnectorTest {
                 new ChildNumber(44, true),
                 new ChildNumber(Protocol.SSH.coinType(), true),
                 new ChildNumber(mangledIdentity, true),
-                new ChildNumber(new AlgField(AlgField.ALG_ED25519, 0, 0).toIndex(), true),
+                new ChildNumber(new UseField(0, 0).toIndex(), true),
                 new ChildNumber(new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex(), true)
         );
         KeyEntry sshKey = new KeyEntry(sshHdPath, Map.of("comment", "alice@test.com"));
@@ -59,7 +60,7 @@ class NipxxConnectorTest {
                     new ChildNumber(44, true),
                     new ChildNumber(Protocol.OPENPGP.coinType(), true),
                     new ChildNumber(mangledIdentity, true),
-                    new ChildNumber(new AlgField(AlgField.ALG_ED25519, 0, role).toIndex(), true),
+                    new ChildNumber(new UseField(0, role).toIndex(), true),
                     new ChildNumber(new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex(), true)
             );
             gpgKeys.add(new KeyEntry(gpgHdPath, Map.of(
@@ -73,7 +74,7 @@ class NipxxConnectorTest {
         GpgServiceHandler gpgHandler = new GpgServiceHandler(vault, gpgKeys);
         gpgHandler.setApprovalUI((m, d) -> true);
 
-        realm = new Realm();
+        realm = new Realm(1, "test", new Identity("alice@test.com"), vault);
         realm.putHandler(Protocol.SSH.coinType(), sshHandler);
         realm.putHandler(Protocol.OPENPGP.coinType(), gpgHandler);
 
@@ -125,14 +126,14 @@ class NipxxConnectorTest {
     @Test
     void handleServiceRequest_noHandler() {
         // Create connector with realm that only has SSH
-        Realm sshOnlyRealm = new Realm();
         var vault = new Bip32KeyVault(TEST_MNEMONIC);
+        Realm sshOnlyRealm = new Realm(2, "ssh-only", new Identity("alice@test.com"), vault);
         int mangledIdentity = Bip32KeyDerivator.mangle("alice@test.com");
         HDPath sshHdPath = HDPath.m(
                 new ChildNumber(44, true),
                 new ChildNumber(Protocol.SSH.coinType(), true),
                 new ChildNumber(mangledIdentity, true),
-                new ChildNumber(new AlgField(AlgField.ALG_ED25519, 0, 0).toIndex(), true),
+                new ChildNumber(new UseField(0, 0).toIndex(), true),
                 new ChildNumber(new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex(), true)
         );
         sshOnlyRealm.putHandler(Protocol.SSH.coinType(),
@@ -174,7 +175,7 @@ class NipxxConnectorTest {
         realmXpubPath[realmBasePath.length] = realmSeq;
 
         // First derivation: FN_GET_PUBLIC_KEY → compressed key + chainCode → xpub
-        VaultResult r1 = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, realmXpubPath);
+        VaultResult r1 = vault.execute(Alg.SECP256K1, KeyVault.FN_GET_PUBLIC_KEY, 0, null, realmXpubPath);
         assertTrue(r1.isOk());
         assertNotNull(r1.chainCode());
         String xpub1 = HDKeyDerivation.createMasterPubKeyFromBytes(
@@ -183,12 +184,66 @@ class NipxxConnectorTest {
 
         // Second derivation from a fresh vault with same mnemonic
         var vault2 = new Bip32KeyVault(TEST_MNEMONIC);
-        VaultResult r2 = vault2.execute(KeyVault.FN_GET_PUBLIC_KEY, null, realmXpubPath);
+        VaultResult r2 = vault2.execute(Alg.SECP256K1, KeyVault.FN_GET_PUBLIC_KEY, 0, null, realmXpubPath);
         String xpub2 = HDKeyDerivation.createMasterPubKeyFromBytes(
                 r2.data(), r2.chainCode())
                 .serializePubB58(BitcoinNetwork.MAINNET);
 
         assertEquals(xpub1, xpub2, "realm xpub must be deterministic across vault instances");
+    }
+
+    // ── x509 (37.1.3) ─────────────────────────────────────────────────────
+
+    @Test
+    void serviceTypeToCoinType_mapsX509() {
+        assertEquals(Protocol.X509.coinType(), NipxxConnector.serviceTypeToCoinType("x509"));
+    }
+
+    @Test
+    void coinTypeToServiceType_mapsX509() {
+        assertEquals("x509", NipxxConnector.coinTypeToServiceType(Protocol.X509.coinType()));
+        assertEquals("ssh", NipxxConnector.coinTypeToServiceType(Protocol.SSH.coinType()));
+        assertNull(NipxxConnector.coinTypeToServiceType(Protocol.MLS.coinType()));
+    }
+
+    /** A connector whose realm serves SSH, GPG (from setUp) and X.509 for alice. */
+    private NipxxConnector connectorWithX509() {
+        var vault = new Bip32KeyVault(TEST_MNEMONIC);
+        var x509 = new X509ServiceHandler(vault, List.of(new Identity("alice@test.com")), null);
+        x509.setApprovalUI((m, d) -> true);
+        realm.putHandler(Protocol.X509.coinType(), x509);
+        return new NipxxConnector(realm);
+    }
+
+    @Test
+    void handleServiceRequest_routesX509List() {
+        JsonArray params = new JsonArray();
+        params.add(new JsonObject());
+
+        JsonObject response = connectorWithX509().handleServiceRequest("x509", "list", params);
+
+        assertTrue(response.has("result"), response.toString());
+        assertEquals("alice@test.com tls-client", response.getAsJsonObject("result")
+                .getAsJsonArray("keys").get(0).getAsJsonObject().get("label").getAsString());
+    }
+
+    @Test
+    void handleServiceRequest_gpgMethodOnX509Channel_isUnknownMethod() {
+        // The transport strips only "x509.", so a gpg-prefixed method arrives whole.
+        JsonArray params = new JsonArray();
+        params.add(new JsonObject());
+
+        JsonObject response = connectorWithX509()
+                .handleServiceRequest("x509", "gpg.sign_request", params);
+
+        assertEquals("unknown method: gpg.sign_request", response.get("error").getAsString());
+    }
+
+    @Test
+    void handleServiceRequest_x509WithoutHandler_isNoHandler() {
+        // setUp's realm has no X.509 handler; "x509" is still a known service.
+        JsonObject response = connector.handleServiceRequest("x509", "list", new JsonArray());
+        assertEquals("no handler for service: x509", response.get("error").getAsString());
     }
 
     @Test

@@ -3,6 +3,7 @@ package club.dwdc.keymaster;
 import org.bitcoinj.crypto.HDPath;
 
 import java.util.List;
+import java.util.stream.Collectors;
 
 /**
  * Typed key metadata store used by the Android UI layer.
@@ -28,7 +29,7 @@ public interface KVMetaStore {
     default void removeByIdentity(String identity) {
         byIdentity(identity).stream()
                 .map(AbstractKeyEntry::path)
-                .toList()
+                .collect(Collectors.toList())
                 .forEach(this::remove);
     }
 }

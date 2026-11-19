@@ -1,6 +1,7 @@
 package club.dwdc.keymaster;
 
-import club.dwdc.keyvault.core.AlgField;
+import club.dwdc.keyvault.core.Alg;
+import club.dwdc.keyvault.core.UseField;
 import club.dwdc.keyvault.core.Bip32KeyDerivator;
 import club.dwdc.keyvault.core.Bip32KeyVault;
 import club.dwdc.keyvault.core.ConfigField;
@@ -30,7 +31,7 @@ class NostrServiceHandlerTest {
             new ChildNumber(44, true),
             new ChildNumber(Protocol.NOSTR.coinType(), true),
             new ChildNumber(Bip32KeyDerivator.mangle(identity), true),
-            new ChildNumber(new AlgField(AlgField.ALG_SCHNORR, 0, 0).toIndex(), true),
+            new ChildNumber(new UseField(0, 0).toIndex(), true),
             new ChildNumber(new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex(), true)
         );
         return new KeyEntry(path, Map.of("identity", identity));

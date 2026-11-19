@@ -1,5 +1,7 @@
 package club.dwdc.keymaster;
 
+import club.dwdc.keyvault.core.Alg;
+import club.dwdc.keyvault.core.UseField;
 import club.dwdc.keyvault.core.Bip32KeyVault;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
@@ -150,18 +152,16 @@ class GpgServiceChannelTest {
         // Derive GPG pubkeys directly from the vault
         int H = 0x80000000;
         int identityIndex = club.dwdc.keyvault.core.Bip32KeyDerivator.mangle("alice@test.com") | H;
-        int algCert = new club.dwdc.keyvault.core.AlgField(
-                club.dwdc.keyvault.core.AlgField.ALG_ED25519, 0, 0).toIndex() | H;
-        int algSign = new club.dwdc.keyvault.core.AlgField(
-                club.dwdc.keyvault.core.AlgField.ALG_ED25519, 0, 1).toIndex() | H;
+        int algCert = new UseField(0, 0).toIndex() | H;
+        int algSign = new UseField(0, 1).toIndex() | H;
         int config = new club.dwdc.keyvault.core.ConfigField(
                 club.dwdc.keyvault.core.ConfigField.CSPRNG_NONE, 0).toIndex() | H;
         int purpose = 44 | H;
         int coin = club.dwdc.keyvault.core.Protocol.OPENPGP.coinType() | H;
 
-        var certResult = vault.execute(club.dwdc.keyvault.core.KeyVault.FN_GET_PUBLIC_KEY, null,
+        var certResult = vault.execute(Alg.ED25519, club.dwdc.keyvault.core.KeyVault.FN_GET_PUBLIC_KEY, 0, null,
                 new int[]{purpose, coin, identityIndex, algCert, config});
-        var signResult = vault.execute(club.dwdc.keyvault.core.KeyVault.FN_GET_PUBLIC_KEY, null,
+        var signResult = vault.execute(Alg.ED25519, club.dwdc.keyvault.core.KeyVault.FN_GET_PUBLIC_KEY, 0, null,
                 new int[]{purpose, coin, identityIndex, algSign, config});
 
         // ServiceChannel identity pubkeys should match vault-derived ones

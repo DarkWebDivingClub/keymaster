@@ -14,6 +14,7 @@ import java.security.MessageDigest;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.function.Consumer;
+import java.util.function.Function;
 
 /**
  * NIP-xx transport connector — implements the KeyMaster-Avatar attach/detach
@@ -30,14 +31,15 @@ public class NipxxConnector implements Connector {
     private final Realm realm;
 
     private KeyVault vault;
-    private int[] realmBasePath;
-    private int realmIndex;
+    private int[] connectorPath;
     private String realmXpub;
 
     private NostrTransport transport;
     private String avatarLoginXpub;
     private final Map<String, ServiceChannel> channels = new HashMap<>();
     private Consumer<NostrTransport.ConnectionState> connectionStateListener;
+    private Function<AvatarDescriptor, RelayClient> relayClientFactory =
+            desc -> new NostrRelayClient(desc.relay());
 
     /**
      * @param realm realm containing active service handlers
@@ -57,15 +59,17 @@ public class NipxxConnector implements Connector {
     }
 
     /**
-     * Inject the vault, realm base path, realm index, and pre-computed xpub
-     * for deterministic service channel derivation.
+     * Inject the vault, this connector's key path, and the pre-computed xpub at
+     * that path for deterministic service channel derivation.
      * Must be called before {@link #connect}.
+     *
+     * @param connectorPath {@code m/KM_PURPOSE'/KM_SCHEME'/realmId'/alg'/mangle(login_xpub)'}
+     *                      — the connection key, parent of this link's channel keys
+     * @param realmXpub     the xpub at {@code connectorPath}, sent to the avatar
      */
-    public void setRealmVault(KeyVault vault, int[] realmBasePath, int realmIndex,
-                              String realmXpub) {
+    public void setRealmVault(KeyVault vault, int[] connectorPath, String realmXpub) {
         this.vault = vault;
-        this.realmBasePath = realmBasePath;
-        this.realmIndex = realmIndex;
+        this.connectorPath = connectorPath;
         this.realmXpub = realmXpub;
     }
 
@@ -73,21 +77,26 @@ public class NipxxConnector implements Connector {
         this.connectionStateListener = listener;
     }
 
+    public void setRelayClientFactory(Function<AvatarDescriptor, RelayClient> factory) {
+        this.relayClientFactory = factory;
+    }
+
     @Override
     public String connect(AvatarDescriptor avatar, TransportSigner signer) throws Exception {
-        if (this.vault == null || this.realmBasePath == null) {
+        if (this.vault == null || this.connectorPath == null) {
             throw new IllegalStateException(
-                    "realm vault must be set before connect()");
+                    "connector vault and path must be set before connect()");
         }
 
         // Transport uses the identity key directly — stable across reconnects
         this.transport = new NostrTransport(signer);
-        transport.setRealmVault(this.vault, this.realmBasePath, this.realmIndex);
+        transport.setRealmVault(this.vault, this.connectorPath);
         transport.setServiceRequestHandler(this::handleServiceRequest);
         if (connectionStateListener != null) {
             transport.setConnectionStateListener(connectionStateListener);
         }
-        transport.connect(avatar.relay());
+        RelayClient relayClient = relayClientFactory.apply(avatar);
+        transport.connect(relayClient);
 
         this.avatarLoginXpub = avatar.loginXpub();
 
@@ -165,6 +174,7 @@ public class NipxxConnector implements Connector {
             case "ssh" -> Protocol.SSH.coinType();
             case "gpg" -> Protocol.OPENPGP.coinType();
             case "nostr" -> Protocol.NOSTR.coinType();
+            case "x509" -> Protocol.X509.coinType();
             default -> null;
         };
     }
@@ -172,10 +182,11 @@ public class NipxxConnector implements Connector {
     /**
      * Map a protocol coin type to its service type string.
      */
-    private static String coinTypeToServiceType(int coinType) {
+    static String coinTypeToServiceType(int coinType) {
         if (coinType == Protocol.SSH.coinType()) return "ssh";
         if (coinType == Protocol.OPENPGP.coinType()) return "gpg";
         if (coinType == Protocol.NOSTR.coinType()) return "nostr";
+        if (coinType == Protocol.X509.coinType()) return "x509";
         return null;
     }
 }

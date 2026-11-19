@@ -1,6 +1,6 @@
 package club.dwdc.keymaster;
 
-import club.dwdc.keyvault.core.AlgField;
+import club.dwdc.keyvault.core.Alg;
 import club.dwdc.keyvault.core.Bip32KeyDerivator;
 import club.dwdc.keyvault.core.ConfigField;
 import club.dwdc.keyvault.core.KeyVault;
@@ -34,7 +34,7 @@ public class SshServiceHandler extends AbstractServiceHandler {
         checkApproval("request_identities", "SSH identity listing");
         List<SshIdentity> identities = new ArrayList<>();
         for (KeyEntry key : keys) {
-            VaultResult pubResult = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, key.toVaultPath());
+            VaultResult pubResult = vault.execute(key.alg(), KeyVault.FN_GET_PUBLIC_KEY, KeyVault.OPT_DEFAULT, null, key.toVaultPath());
             if (!pubResult.isOk()) {
                 continue;
             }
@@ -56,13 +56,13 @@ public class SshServiceHandler extends AbstractServiceHandler {
     public SshSignResponse signRequest(SshSignRequest request) {
         checkApproval("sign_request", "SSH signing request");
         for (KeyEntry key : keys) {
-            VaultResult pubResult = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, key.toVaultPath());
+            VaultResult pubResult = vault.execute(key.alg(), KeyVault.FN_GET_PUBLIC_KEY, KeyVault.OPT_DEFAULT, null, key.toVaultPath());
             if (!pubResult.isOk()) {
                 continue;
             }
             byte[] blob = buildSshEd25519KeyBlob(pubResult.data());
             if (Arrays.equals(blob, request.keyBlob())) {
-                VaultResult signResult = vault.execute(KeyVault.FN_SIGN, request.data(), key.toVaultPath());
+                VaultResult signResult = vault.execute(key.alg(), KeyVault.FN_SIGN, KeyVault.OPT_DEFAULT, request.data(), key.toVaultPath());
                 if (!signResult.isOk()) {
                     throw new IllegalStateException("sign failed: status=" + signResult.status());
                 }
@@ -95,17 +95,9 @@ public class SshServiceHandler extends AbstractServiceHandler {
      * @return authorized_keys line
      */
     public static String getAuthorizedKeysLine(KeyVault vault, String identity) {
-        int H = 0x80000000;
-        int identityIndex = Bip32KeyDerivator.mangle(identity) | H;
-        int[] sshPath = {
-                44 | H,
-                Protocol.SSH.coinType() | H,
-                identityIndex,
-                new AlgField(AlgField.ALG_ED25519, 0, 0).toIndex() | H,
-                new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex() | H
-        };
+        int[] sshPath = IdentityPaths.ssh(new Identity(identity));
 
-        VaultResult pubResult = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, sshPath);
+        VaultResult pubResult = vault.execute(Alg.ED25519, KeyVault.FN_GET_PUBLIC_KEY, KeyVault.OPT_DEFAULT, null, sshPath);
         if (!pubResult.isOk()) {
             throw new IllegalStateException("Failed to derive SSH key: status=" + pubResult.status());
         }

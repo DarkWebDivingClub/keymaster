@@ -2,11 +2,20 @@ package club.dwdc.keymaster;
 
 import club.dwdc.keyvault.core.Bip32KeyDerivator;
 import club.dwdc.keyvault.core.Bip32KeyVault;
+import club.dwdc.keyvault.core.KeyVault;
 import club.dwdc.keyvault.core.Protocol;
 import org.junit.jupiter.api.Test;
 
+import java.util.Collections;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -25,7 +34,40 @@ class KeyMasterControllerTest {
         var ctrl = new KeyMasterController(km);
         ctrl.createIdentity("alice@atlanta.com", "Alice", "alice@atlanta.com");
 
-        assertNull(km.realms.get("alice@atlanta.com"));
+        assertTrue(km.realms.isEmpty(), "createIdentity builds no realm");
+    }
+
+    @Test
+    void createIdentity_registersTlsClientEntry() {
+        var store = new InMemoryKeyMetaDataStore();
+        var ctrl = new KeyMasterController(new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC), store));
+        ctrl.createIdentity("alice@atlanta.com", "Alice", "alice@atlanta.com");
+
+        var path = IdentityPaths.hdPath(
+                IdentityPaths.x509(new Identity("alice@atlanta.com"), X509Role.TLS_CLIENT));
+        KeyEntry entry = store.getKey(path);
+        assertNotNull(entry, "TLS client entry registered");
+        assertEquals(1, store.keysByProtocol(Protocol.X509.coinType()).size(), "TLS client only");
+        assertFalse(entry.metadata().containsKey("label"), "label is generated, never stored");
+        assertTrue(X509CertSlot.get(entry).isEmpty(), "nothing fills the certificate slot yet");
+    }
+
+    @Test
+    void createIdentity_keepsExistingX509Entry() {
+        var store = new InMemoryKeyMetaDataStore();
+        var path = IdentityPaths.hdPath(
+                IdentityPaths.x509(new Identity("alice@atlanta.com"), X509Role.TLS_CLIENT));
+        byte[] der = {0x30, 0x03, 0x02, 0x01, 0x01};
+        var existing = X509CertSlot.with(
+                new KeyEntry(path, java.util.Map.of("note", "keep me")), der);
+        store.addKey(existing);
+
+        var ctrl = new KeyMasterController(new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC), store));
+        ctrl.createIdentity("alice@atlanta.com", "Alice", "alice@atlanta.com");
+
+        KeyEntry after = store.getKey(path);
+        assertArrayEquals(der, X509CertSlot.get(after).orElseThrow(), "certificate kept");
+        assertEquals("keep me", after.metadata().get("note"), "other metadata kept");
     }
 
     @Test
@@ -86,32 +128,26 @@ class KeyMasterControllerTest {
         var ctrl = new KeyMasterController(km);
         ctrl.createIdentity("alice@atlanta.com", "Alice", "alice@atlanta.com");
 
-        // Manually build realm + handlers (simulating what attach does)
-        int mangledIdentity = Bip32KeyDerivator.mangle("alice@atlanta.com");
-        List<KeyEntry> sshKeys = store.keysByIdentity(mangledIdentity).stream()
-                .filter(k -> k.coinType() == Protocol.SSH.coinType())
-                .toList();
-        List<KeyEntry> gpgKeys = store.keysByIdentity(mangledIdentity).stream()
-                .filter(k -> k.coinType() == Protocol.OPENPGP.coinType())
-                .toList();
-        SshServiceHandler sshHandler = new SshServiceHandler(vault, sshKeys);
-        GpgServiceHandler gpgHandler = new GpgServiceHandler(vault, gpgKeys);
-        Realm realm = new Realm();
-        realm.putHandler(Protocol.SSH.coinType(), sshHandler);
-        realm.putHandler(Protocol.OPENPGP.coinType(), gpgHandler);
-        km.realms.put("alice@atlanta.com", realm);
+        // A realm resolves its own handlers from the store
+        Realm realm = ctrl.createRealm("work", new Identity("alice@atlanta.com"));
+        assertNotNull(realm.getHandler(Protocol.SSH.coinType()));
+        assertNotNull(realm.getHandler(Protocol.OPENPGP.coinType()));
 
-        // Simulate attach setting currentIdentity by using attach with a mock connector
-        // attach requires a real relay, so we test setApprovalHandler before attach:
-        // set handler, then verify it's stored for later use by attach
+        // Setting the handler afterwards reaches the realm's live handlers
         AtomicBoolean called = new AtomicBoolean(false);
         ctrl.setApprovalHandler((type, detail) -> {
             called.set(true);
             return true;
         });
 
-        // Verify handler is stored (no currentIdentity yet, so no propagation)
-        assertNotNull(ctrl.getKeyMaster());
+        realm.getHandler(Protocol.SSH.coinType()).keys();
+        ((SshServiceHandler) realm.getHandler(Protocol.SSH.coinType())).requestIdentities();
+        assertFalse(called.get(), "request_identities defaults to APPROVE, so no prompt");
+
+        ((SshServiceHandler) realm.getHandler(Protocol.SSH.coinType()))
+                .setPolicy("request_identities", ApprovalPolicy.ASK);
+        ((SshServiceHandler) realm.getHandler(Protocol.SSH.coinType())).requestIdentities();
+        assertTrue(called.get(), "an ASK method must reach the approval handler");
     }
 
     @Test
@@ -130,5 +166,243 @@ class KeyMasterControllerTest {
                 List.of("ssh"));
         assertThrows(IllegalStateException.class,
                 () -> ctrl.attach(descriptor, "alice@atlanta.com"));
+    }
+
+    // ── realm lifecycle ───────────────────────────────────────────────────
+
+    @Test
+    void createRealm_defaultsNameToLocalPart_withSuffixOnCollision() {
+        var store = new InMemoryKeyMetaDataStore();
+        var km = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC), store);
+        var ctrl = new KeyMasterController(km);
+        ctrl.createIdentity("alice@atlanta.com", "Alice", "alice@atlanta.com");
+        var alice = new Identity("alice@atlanta.com");
+
+        assertEquals("alice", ctrl.createRealm(null, alice).name());
+        assertEquals("alice-2", ctrl.createRealm("", alice).name());
+        assertEquals("alice-3", ctrl.createRealm("   ", alice).name());
+        assertEquals("myFirstRealm", ctrl.createRealm("myFirstRealm", alice).name(),
+                "a name the user typed is used as given");
+    }
+
+    @Test
+    void createRealm_idsAreRandomAndDistinct() {
+        var store = new InMemoryKeyMetaDataStore();
+        var km = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC), store);
+        var ctrl = new KeyMasterController(km);
+        ctrl.createIdentity("alice@atlanta.com", "Alice", "alice@atlanta.com");
+        var alice = new Identity("alice@atlanta.com");
+
+        var ids = new java.util.HashSet<Integer>();
+        for (int i = 0; i < 50; i++) {
+            int id = ctrl.createRealm("realm-" + i, alice).id();
+            assertTrue(id >= 0, "31 bits, never negative: " + id);
+            assertTrue(ids.add(id), "a duplicate draw must be redrawn, not accepted");
+        }
+        assertEquals(50, km.realms.size());
+
+        // Not a timestamp: consecutive draws are not monotonic
+        var sequence = km.realms.keySet().stream().toList();
+        assertTrue(sequence.size() > 2);
+    }
+
+    @Test
+    void realms_areKeyedByIdSoTwoRealmsCanShareAnIdentity() {
+        var store = new InMemoryKeyMetaDataStore();
+        var km = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC), store);
+        var ctrl = new KeyMasterController(km);
+        ctrl.createIdentity("alice@atlanta.com", "Alice", "alice@atlanta.com");
+        var alice = new Identity("alice@atlanta.com");
+
+        Realm work = ctrl.createRealm("work", alice);
+        Realm home = ctrl.createRealm("home", alice);
+
+        assertNotSame(work, home);
+        assertEquals(2, ctrl.realms().size(),
+                "an identity-keyed map could not hold both");
+        assertNotSame(work.getHandler(Protocol.SSH.coinType()),
+                home.getHandler(Protocol.SSH.coinType()),
+                "realms share no handler instance, which is why policy can differ");
+    }
+
+    @Test
+    void detachRealm_removesTheRealm() {
+        var store = new InMemoryKeyMetaDataStore();
+        var km = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC), store);
+        var ctrl = new KeyMasterController(km);
+        ctrl.createIdentity("alice@atlanta.com", "Alice", "alice@atlanta.com");
+
+        Realm realm = ctrl.createRealm("work", new Identity("alice@atlanta.com"));
+        assertFalse(realm.hasConnectors());
+
+        ctrl.detachRealm(realm.id());
+        assertTrue(ctrl.realms().isEmpty());
+        assertNull(ctrl.getRealm(realm.id()));
+    }
+
+    @Test
+    void detach_unknownRealm_isANoOp() {
+        var km = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC), new InMemoryKeyMetaDataStore());
+        var ctrl = new KeyMasterController(km);
+
+        assertDoesNotThrow(() -> ctrl.detach(4242, 1));
+        assertDoesNotThrow(() -> ctrl.detachRealm(4242));
+        assertDoesNotThrow(() -> ctrl.detach());
+    }
+
+    @Test
+    void attachToRealm_unknownRealm_throws() {
+        var km = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC), new InMemoryKeyMetaDataStore());
+        var ctrl = new KeyMasterController(km);
+
+        assertThrows(IllegalArgumentException.class,
+                () -> ctrl.attachToRealm(4242, null));
+    }
+
+    // ── concurrency (41/F12) ──────────────────────────────────────────────
+    //
+    // Mission 36.3.4 added two guards against races and neither had a test.
+    // A successful attach needs a live avatar, so the attach itself is faked
+    // here — what is under test is the controller's bookkeeping around it, not
+    // the handshake, which the E2E suite covers.
+
+    /** A realm whose attach succeeds instantly and reports what was undone. */
+    private static class SpyRealm extends Realm {
+        final AtomicInteger detached = new AtomicInteger();
+        Runnable duringAttach = () -> {};
+
+        SpyRealm(int id, KeyVault vault) {
+            super(id, "spy", new Identity("alice@atlanta.com"), vault);
+        }
+
+        @Override
+        public AttachResult attach(AvatarDescriptor avatar) {
+            duringAttach.run();
+            return new AttachResult(4242, "event-id");
+        }
+
+        @Override
+        public void detach(int connectorId) {
+            detached.incrementAndGet();
+        }
+    }
+
+    @Test
+    void attachToRealm_undoesTheConnectorIfTheRealmIsDetachedMidAttach() throws Exception {
+        var vault = new Bip32KeyVault(TEST_MNEMONIC);
+        var km = new KeyMaster(vault, new InMemoryKeyMetaDataStore());
+        var ctrl = new KeyMasterController(km);
+        var realm = new SpyRealm(7, vault);
+        km.realms.put(7, realm);
+
+        // the race, made deterministic: the realm goes away while attaching
+        realm.duringAttach = () -> km.realms.remove(7);
+
+        var e = assertThrows(IllegalStateException.class, () ->
+                ctrl.attachToRealm(7, descriptor()));
+        assertTrue(e.getMessage().contains("detached while attaching"), e.getMessage());
+        assertEquals(1, realm.detached.get(),
+                "the connector must be closed, not left live on an unreachable realm");
+    }
+
+    @Test
+    void attachToRealm_keepsTheConnectorWhenTheRealmSurvives() throws Exception {
+        var vault = new Bip32KeyVault(TEST_MNEMONIC);
+        var km = new KeyMaster(vault, new InMemoryKeyMetaDataStore());
+        var ctrl = new KeyMasterController(km);
+        var realm = new SpyRealm(7, vault);
+        km.realms.put(7, realm);
+
+        var result = ctrl.attachToRealm(7, descriptor());
+
+        assertEquals(4242, result.connectorId());
+        assertEquals(0, realm.detached.get(), "nothing to undo on the happy path");
+        assertSame(realm, km.realms.get(7));
+    }
+
+    @Test
+    void attachToRealm_undoesTheConnectorIfTheRealmWasReplacedMidAttach() throws Exception {
+        // Not just removal: an id reused by a different realm must also count
+        // as "this is no longer my realm" — the guard compares identity, not
+        // mere presence.
+        var vault = new Bip32KeyVault(TEST_MNEMONIC);
+        var km = new KeyMaster(vault, new InMemoryKeyMetaDataStore());
+        var ctrl = new KeyMasterController(km);
+        var realm = new SpyRealm(7, vault);
+        km.realms.put(7, realm);
+        realm.duringAttach = () -> km.realms.put(7, new SpyRealm(7, vault));
+
+        assertThrows(IllegalStateException.class, () -> ctrl.attachToRealm(7, descriptor()));
+        assertEquals(1, realm.detached.get());
+    }
+
+    @Test
+    void createRealm_underContention_yieldsDistinctIdsAndNames() throws Exception {
+        var km = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC), new InMemoryKeyMetaDataStore());
+        var ctrl = new KeyMasterController(km);
+        var alice = new Identity("alice@atlanta.com");
+        int threads = 16;
+
+        Set<Integer> ids = ConcurrentHashMap.newKeySet();
+        Set<String> names = ConcurrentHashMap.newKeySet();
+        runConcurrently(threads, () -> {
+            Realm realm = ctrl.createRealm(null, alice, List.of(new IdentitySelection(alice)));
+            ids.add(realm.id());
+            names.add(realm.name());
+        });
+
+        assertEquals(threads, km.realms.size(), "every realm must be registered");
+        assertEquals(threads, ids.size(), "a redrawn id must never collide");
+        assertEquals(threads, names.size(), "the default name must stay unique too");
+    }
+
+    @Test
+    void detachRealm_underContention_removesItExactlyOnce() throws Exception {
+        var km = new KeyMaster(new Bip32KeyVault(TEST_MNEMONIC), new InMemoryKeyMetaDataStore());
+        var ctrl = new KeyMasterController(km);
+        var alice = new Identity("alice@atlanta.com");
+        Realm realm = ctrl.createRealm(null, alice, List.of(new IdentitySelection(alice)));
+
+        var failures = Collections.synchronizedList(new java.util.ArrayList<Exception>());
+        runConcurrently(8, () -> {
+            try {
+                ctrl.detachRealm(realm.id());
+            } catch (Exception e) {
+                failures.add(e);
+            }
+        });
+
+        assertTrue(km.realms.isEmpty(), "the realm is gone");
+        assertEquals(List.of(), failures, "a losing detach is a no-op, not an error");
+    }
+
+    private static AvatarDescriptor descriptor() {
+        return new AvatarDescriptor("ws://127.0.0.1:1",
+                "xpub6CUGRUonZSQ4TWtTMmzXdrXDtyPWKiKbbqnWxx2qaGvxZ2x", List.of("ssh"));
+    }
+
+    /** Run {@code body} on {@code threads} threads released together. */
+    private static void runConcurrently(int threads, Runnable body) throws Exception {
+        ExecutorService pool = Executors.newFixedThreadPool(threads);
+        var start = new CountDownLatch(1);
+        var done = new CountDownLatch(threads);
+        try {
+            for (int i = 0; i < threads; i++) {
+                pool.execute(() -> {
+                    try {
+                        start.await();
+                        body.run();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    } finally {
+                        done.countDown();
+                    }
+                });
+            }
+            start.countDown();
+            assertTrue(done.await(30, TimeUnit.SECONDS), "threads did not finish");
+        } finally {
+            pool.shutdownNow();
+        }
     }
 }

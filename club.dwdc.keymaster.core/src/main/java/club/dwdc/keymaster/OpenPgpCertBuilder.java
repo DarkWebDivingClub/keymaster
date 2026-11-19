@@ -132,7 +132,7 @@ public final class OpenPgpCertBuilder {
     }
 
     private static byte[] getPublicKey(KeyVault vault, KeyEntry key) {
-        VaultResult result = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, key.toVaultPath());
+        VaultResult result = vault.execute(key.alg(), KeyVault.FN_GET_PUBLIC_KEY, KeyVault.OPT_DEFAULT, null, key.toVaultPath());
         if (!result.isOk()) {
             throw new IllegalStateException(
                     "Failed to get public key: status=" + result.status());

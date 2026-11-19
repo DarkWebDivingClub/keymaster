@@ -80,7 +80,7 @@ encryption/decryption.
 The initial protocol-specific service contracts are:
 
 - [SSH service protocol](SSH.md)
-- [PKCS#11 service protocol](PKCS11.md)
+- [PKCS#11 service protocol](PKCS11.md), superseded by the [X.509 service](X509.md)
 - [OpenPGP service protocol](GPG.md)
 - [Nostr service protocol](NOSTR.md)
 - [Bitcoin service protocol](BITCOIN.md)
@@ -715,8 +715,11 @@ gpg
 ```
 
 Public OpenPGP certificates, fingerprints, subkey metadata, and creation times
-remain first-class metadata. KeyExporter may construct exportable OpenPGP key
-rings, while runtime private-key operations remain controlled by KeyMaster.
+remain first-class metadata. Private OpenPGP keys never leave the vault
+(keyvault 0.6.0 refuses `EXPORT` for every supported algorithm); only public
+certificates are exported, and runtime private-key operations remain
+controlled by KeyMaster. KeyExporter, which built exportable key rings, is
+retired (keymaster-wks mission 48.4).
 
 ## Security Boundaries
 
