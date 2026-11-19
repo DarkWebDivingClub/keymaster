@@ -24,6 +24,14 @@ operations.
 Adding, removing, locking, or exporting private keys is not supported.
 Unsupported SSH-agent requests return the standard SSH-agent failure response.
 
+## Keys in keymaster 0.9.0
+
+keymaster 0.9.0 (keyvault 0.6.0) derives SSH keys with SLIP-10 from the
+`ed25519 seed` root, at `m/44'/1238'/mangle(identity)'/0'/0'` (`65536'`
+before 0.9.0). **Every SSH key changed**: hosts must be given the new public
+key (keymaster-wks mission 48.6). The vault only allows `ED25519` and `P256`
+keys on the SSH tree, and only for public-key and sign operations.
+
 ## List Identities
 
 `ssh.listIdentities` returns the SSH public identities available to the
