@@ -1,5 +1,6 @@
 package club.dwdc.keymaster;
 
+import club.dwdc.keyvault.core.Alg;
 import club.dwdc.keyvault.core.KeyVault;
 import club.dwdc.keyvault.core.VaultResult;
 import org.bitcoinj.crypto.HDPath;
@@ -83,7 +84,7 @@ public class X509ServiceHandler extends AbstractServiceHandler {
         }
         checkApproval("sign", "X.509 signing request: " + slot.label());
 
-        VaultResult result = vault.execute(KeyVault.FN_SIGN, request.digest(), slot.path());
+        VaultResult result = vault.execute(Alg.P256, KeyVault.FN_SIGN, KeyVault.OPT_P256_ECDSA, request.digest(), slot.path());
         if (!result.isOk()) {
             throw new IllegalStateException("sign failed: status=" + result.status());
         }

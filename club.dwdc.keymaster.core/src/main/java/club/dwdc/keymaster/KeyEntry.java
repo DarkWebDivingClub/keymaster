@@ -1,5 +1,7 @@
 package club.dwdc.keymaster;
 
+import club.dwdc.keyvault.core.Alg;
+
 import org.bitcoinj.crypto.HDPath;
 
 import java.util.Map;
@@ -16,13 +18,23 @@ public record KeyEntry(HDPath path, Map<String, String> metadata) {
     /** Identity hash (level 3), hardened bit stripped. */
     public int identity()  { return path.get(2).num(); }
 
-    /** Algorithm field (upper 15 bits of level 4). */
-    public int algorithm() { return (path.get(3).num() >> 16) & 0x7FFF; }
+    /** Metadata key under which an entry records its vault algorithm ({@link Alg#name()}). */
+    public static final String ALG = "alg";
 
-    /** Variant field (middle 8 bits of level 4). */
+    /**
+     * The vault algorithm of this key: the {@link #ALG} metadata value if set,
+     * otherwise the protocol default ({@link IdentityPaths#algFor}). Since
+     * keyvault 0.6.0 the path carries no algorithm.
+     */
+    public Alg alg() {
+        String recorded = metadata == null ? null : metadata.get(ALG);
+        return recorded != null ? Alg.valueOf(recorded) : IdentityPaths.algFor(coinType());
+    }
+
+    /** Variant field (bits 15-8 of level 4): the vault {@code option}. */
     public int variant()   { return (path.get(3).num() >> 8) & 0xFF; }
 
-    /** Role field (lower 8 bits of level 4). */
+    /** Role field (bits 7-0 of level 4), per protocol. */
     public int role()      { return path.get(3).num() & 0xFF; }
 
     /**

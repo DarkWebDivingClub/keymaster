@@ -15,15 +15,18 @@ WORK=$(mktemp -d "${TMPDIR:-/tmp}/x509-fixtures.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
 
 # Alice's TLS client public key: the vault's P-256 key at
-# m/44'/1240'/1955269225'/196866'/0' (test mnemonic "abandon x11 about").
+# m/44'/1240'/1955269225'/2'/0' (test mnemonic "abandon x11 about"),
+# keyvault 0.6.0 / keymaster 0.9.0, SLIP-10 "Nist256p1 seed" root.
 # This SPKI is the fixed P-256 prefix
 #   3059301306072a8648ce3d020106082a8648ce3d030107034200
-# followed by the 37.1.1 point 04b99b60...a81a2a81.
+# followed by the point 04c668dd...9067a53f6, which keyvault's GoldenPathTest
+# pins and keyvault/tools/slip10_ref.py computes independently.
+# (Before 0.9.0: m/44'/1240'/1955269225'/196866'/0', point 04b99b60...a81a2a81.)
 # X509CertCheckTest asserts the vault still derives exactly this point.
 cat > "$WORK/alice.pub.pem" <<'EOF'
 -----BEGIN PUBLIC KEY-----
-MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEuZtg1QH4xEEIOXefvqGZ2HuD3Wdf
-+6UyI1Ka39DwWsg8GZrdpLe3qq1Qr9PtSyMDYebOVup4eQcHy32EqBoqgQ==
+MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAExmjdDsJpnNFul7KooNxmMbB4MJwS
+Y3V2ISNBhuk9tNdw26pi5ANiVTAAh9XEPocs1vskKp+HqAeGZD2pBnpT9g==
 -----END PUBLIC KEY-----
 EOF
 

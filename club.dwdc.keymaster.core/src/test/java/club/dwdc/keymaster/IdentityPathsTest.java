@@ -32,17 +32,17 @@ class IdentityPathsTest {
     }
 
     @Test
-    void sshMatchesTheDocument() {   // m/44'/1238'/1955269225'/65536'/0'
-        assertArrayEquals(p(44 | H, 1238 | H, MANGLE | H, 65536 | H, 0 | H),
+    void sshMatchesTheDocument() {   // m/44'/1238'/1955269225'/0'/0' (65536' before 0.9.0)
+        assertArrayEquals(p(44 | H, 1238 | H, MANGLE | H, 0 | H, 0 | H),
                 IdentityPaths.ssh(ALICE));
     }
 
     @Test
-    void gpgMatchesTheDocument() {   // 65536' certification, 65537' signing
-        assertArrayEquals(p(44 | H, 1239 | H, MANGLE | H, 65536 | H, 0 | H),
-                IdentityPaths.gpg(ALICE, 0));
-        assertArrayEquals(p(44 | H, 1239 | H, MANGLE | H, 65537 | H, 0 | H),
-                IdentityPaths.gpg(ALICE, 1));
+    void gpgMatchesTheDocument() {   // 0' certification, 1' signing (65536'/65537' before 0.9.0)
+        assertArrayEquals(p(44 | H, 1239 | H, MANGLE | H, 0 | H, 0 | H),
+                IdentityPaths.gpg(ALICE, IdentityPaths.OPENPGP_CERTIFICATION));
+        assertArrayEquals(p(44 | H, 1239 | H, MANGLE | H, 1 | H, 0 | H),
+                IdentityPaths.gpg(ALICE, IdentityPaths.OPENPGP_SIGNING));
     }
 
     @Test
@@ -52,15 +52,15 @@ class IdentityPathsTest {
     }
 
     @Test
-    void mlsSignMatchesTheDocument() {   // m/44'/1242'/1955269225'/65536'/0'
-        assertArrayEquals(p(44 | H, 1242 | H, MANGLE | H, 65536 | H, 0 | H),
+    void mlsSignMatchesTheDocument() {   // m/44'/1242'/1955269225'/0'/0' (65536' before 0.9.0)
+        assertArrayEquals(p(44 | H, 1242 | H, MANGLE | H, 0 | H, 0 | H),
                 IdentityPaths.mlsSign(ALICE));
     }
 
     @Test
-    void x509TlsClientMatchesTheMission() {   // m/44'/1240'/1955269225'/196866'/0'
-        // 196866 = ALG_ECDSA(3) << 16 | P-256(1) << 8 | tls-client(2)
-        assertArrayEquals(p(44 | H, 1240 | H, MANGLE | H, 196866 | H, 0 | H),
+    void x509TlsClientMatchesTheMission() {   // m/44'/1240'/1955269225'/2'/0'
+        // use' = UseField(0, tls-client 2). Before 0.9.0: 196866 = ALG_ECDSA(3) << 16 | P-256(1) << 8 | 2
+        assertArrayEquals(p(44 | H, 1240 | H, MANGLE | H, 2 | H, 0 | H),
                 IdentityPaths.x509(ALICE, X509Role.TLS_CLIENT));
     }
 
@@ -123,7 +123,7 @@ class IdentityPathsTest {
         int[] second = IdentityPaths.mlsHpke(ALICE, 1);
 
         assertEquals(1242, first[1] & ~H);
-        assertEquals(65537, first[3] & ~H, "ed25519 with ROLE_HPKE");
+        assertEquals(IdentityPaths.MLS_HPKE, first[3] & ~H, "MLS HPKE role 1 (65537 before 0.9.0)");
         for (int level = 0; level < 4; level++) {
             assertEquals(first[level], second[level], "only the index may differ");
         }
@@ -168,8 +168,30 @@ class IdentityPathsTest {
                 IdentityPaths.nostr(ALICE), IdentityPaths.ssh(ALICE),
                 IdentityPaths.gpg(ALICE, 0), IdentityPaths.gpg(ALICE, 1),
                 IdentityPaths.mlsSign(ALICE), IdentityPaths.mlsHpke(ALICE, 0)}) {
-            assertTrue(vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, path).isOk(),
+            assertTrue(vault.execute(IdentityPaths.algFor(path[1] & ~H), KeyVault.FN_GET_PUBLIC_KEY, 0, null, path).isOk(),
                     "vault rejected a path this class produced");
         }
+    }
+
+    @Test
+    void algorithmPerProtocol() {
+        assertEquals(club.dwdc.keyvault.core.Alg.SECP256K1, IdentityPaths.algFor(1237));
+        assertEquals(club.dwdc.keyvault.core.Alg.ED25519, IdentityPaths.algFor(1238));
+        assertEquals(club.dwdc.keyvault.core.Alg.ED25519, IdentityPaths.algFor(1239));
+        assertEquals(club.dwdc.keyvault.core.Alg.P256, IdentityPaths.algFor(1240));
+        assertEquals(club.dwdc.keyvault.core.Alg.ED25519, IdentityPaths.algFor(1242));
+        assertEquals(club.dwdc.keyvault.core.Alg.SECP256K1, IdentityPaths.algFor(RealmPaths.KM_PURPOSE));
+    }
+
+    @Test
+    void x509RolesAreFrozen() {
+        assertEquals(0, X509Role.CA.number());
+        assertEquals(1, X509Role.TLS_SERVER.number());
+        assertEquals(2, X509Role.TLS_CLIENT.number());
+        assertEquals(3, X509Role.CODE_SIGNING.number());
+        assertEquals(4, X509Role.SMIME.number());
+        assertEquals(5, X509Role.SMIME_ENCRYPT.number());
+        assertEquals("smime-encrypt", X509Role.SMIME_ENCRYPT.token());
+        assertEquals(java.util.List.of(X509Role.TLS_CLIENT), X509Role.TEMPLATE, "smime-encrypt is not in the template");
     }
 }

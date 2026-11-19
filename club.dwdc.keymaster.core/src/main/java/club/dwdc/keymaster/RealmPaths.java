@@ -1,7 +1,7 @@
 package club.dwdc.keymaster;
 
-import club.dwdc.keyvault.core.AlgField;
 import club.dwdc.keyvault.core.Bip32KeyDerivator;
+import club.dwdc.keyvault.core.UseField;
 
 /**
  * The KM-internal key paths — one authority for the tree marked
@@ -33,17 +33,19 @@ public final class RealmPaths {
      * one avatar link's connection key, exported to that avatar as
      * {@code realm_xpub} and the parent of its service channel keys.
      *
-     * <p>All five levels are hardened. The algorithm level is required rather
-     * than decorative: the vault rejects paths shorter than five levels and
-     * reads the key type from level 4. These are Schnorr keys — Schnorr
-     * signatures for channel events, secp256k1 ECDH for NIP-44.
+     * <p>All five levels are hardened. Level 4 is {@code use'} =
+     * {@code UseField(0, 0)}, whose value {@code 0'} is unchanged from the
+     * 0.5.x algorithm field (Schnorr = 0), so realm keys are the same in
+     * 0.9.0. The vault rejects paths shorter than five levels. These are
+     * secp256k1 keys ({@code Alg.SECP256K1}) — Schnorr signatures for channel
+     * events, ECDH for NIP-44.
      */
     public static int[] connector(int realmId, String avatarLoginXpub) {
         return new int[]{
                 KM_PURPOSE | H,
                 KM_SCHEME | H,
                 realmId | H,
-                new AlgField(AlgField.ALG_SCHNORR, 0, 0).toIndex() | H,
+                new UseField(0, 0).toIndex() | H,
                 Bip32KeyDerivator.mangle(avatarLoginXpub) | H
         };
     }

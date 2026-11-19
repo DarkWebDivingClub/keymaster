@@ -1,6 +1,7 @@
 package club.dwdc.keymaster;
 
-import club.dwdc.keyvault.core.AlgField;
+import club.dwdc.keyvault.core.Alg;
+import club.dwdc.keyvault.core.UseField;
 import club.dwdc.keyvault.core.Bip32KeyDerivator;
 import club.dwdc.keyvault.core.Bip32KeyVault;
 import club.dwdc.keyvault.core.ConfigField;
@@ -108,24 +109,24 @@ class DeviceSignerTest {
         int mangledIdentity = Bip32KeyDerivator.mangle(identity);
         int[] path = {
                 44 | H, Protocol.NOSTR.coinType() | H, mangledIdentity | H,
-                new AlgField(AlgField.ALG_SCHNORR, 0, 0).toIndex() | H,
+                new UseField(0, 0).toIndex() | H,
                 new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex() | H
         };
         return new TransportSigner() {
             @Override
             public String getPubkey() {
-                byte[] compressed = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, path).data();
+                byte[] compressed = vault.execute(Alg.SECP256K1, KeyVault.FN_GET_PUBLIC_KEY, 0, null, path).data();
                 return NostrUtil.bytesToHex(Arrays.copyOfRange(compressed, 1, 33));
             }
 
             @Override
             public byte[] sign(byte[] hash) {
-                return vault.execute(KeyVault.FN_SIGN, hash, path).data();
+                return vault.execute(Alg.SECP256K1, KeyVault.FN_SIGN, 0, hash, path).data();
             }
 
             @Override
             public byte[] ecdh(byte[] peerPubKey) {
-                return vault.execute(KeyVault.FN_KEY_AGREEMENT, peerPubKey, path).data();
+                return vault.execute(Alg.SECP256K1, KeyVault.FN_KEY_AGREEMENT, 0, peerPubKey, path).data();
             }
         };
     }

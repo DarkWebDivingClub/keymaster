@@ -1,6 +1,7 @@
 package club.dwdc.keymaster;
 
-import club.dwdc.keyvault.core.AlgField;
+import club.dwdc.keyvault.core.Alg;
+import club.dwdc.keyvault.core.UseField;
 import club.dwdc.keyvault.core.Bip32KeyDerivator;
 import club.dwdc.keyvault.core.Bip32KeyVault;
 import club.dwdc.keyvault.core.KeyVault;
@@ -162,8 +163,8 @@ class ServiceChannelTest {
         int H = 0x80000000;
         int identityIndex = Bip32KeyDerivator.mangle("alice@test.com") | H;
         int[] sshPath = {44 | H, Protocol.SSH.coinType() | H, identityIndex,
-                new AlgField(AlgField.ALG_ED25519, 0, 0).toIndex() | H, 0 | H};
-        var pubResult = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, sshPath);
+                new UseField(0, 0).toIndex() | H, 0 | H};
+        var pubResult = vault.execute(Alg.ED25519, KeyVault.FN_GET_PUBLIC_KEY, 0, null, sshPath);
         byte[] expectedBlob = SshServiceHandler.buildSshEd25519KeyBlob(pubResult.data());
 
         // ServiceChannel identity blob should match

@@ -1,6 +1,7 @@
 package club.dwdc.keymaster;
 
-import club.dwdc.keyvault.core.AlgField;
+import club.dwdc.keyvault.core.Alg;
+import club.dwdc.keyvault.core.UseField;
 import club.dwdc.keyvault.core.Bip32KeyDerivator;
 import club.dwdc.keyvault.core.Bip32KeyVault;
 import club.dwdc.keyvault.core.ConfigField;
@@ -44,7 +45,7 @@ class NipxxConnectorTest {
                 new ChildNumber(44, true),
                 new ChildNumber(Protocol.SSH.coinType(), true),
                 new ChildNumber(mangledIdentity, true),
-                new ChildNumber(new AlgField(AlgField.ALG_ED25519, 0, 0).toIndex(), true),
+                new ChildNumber(new UseField(0, 0).toIndex(), true),
                 new ChildNumber(new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex(), true)
         );
         KeyEntry sshKey = new KeyEntry(sshHdPath, Map.of("comment", "alice@test.com"));
@@ -59,7 +60,7 @@ class NipxxConnectorTest {
                     new ChildNumber(44, true),
                     new ChildNumber(Protocol.OPENPGP.coinType(), true),
                     new ChildNumber(mangledIdentity, true),
-                    new ChildNumber(new AlgField(AlgField.ALG_ED25519, 0, role).toIndex(), true),
+                    new ChildNumber(new UseField(0, role).toIndex(), true),
                     new ChildNumber(new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex(), true)
             );
             gpgKeys.add(new KeyEntry(gpgHdPath, Map.of(
@@ -132,7 +133,7 @@ class NipxxConnectorTest {
                 new ChildNumber(44, true),
                 new ChildNumber(Protocol.SSH.coinType(), true),
                 new ChildNumber(mangledIdentity, true),
-                new ChildNumber(new AlgField(AlgField.ALG_ED25519, 0, 0).toIndex(), true),
+                new ChildNumber(new UseField(0, 0).toIndex(), true),
                 new ChildNumber(new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex(), true)
         );
         sshOnlyRealm.putHandler(Protocol.SSH.coinType(),
@@ -174,7 +175,7 @@ class NipxxConnectorTest {
         realmXpubPath[realmBasePath.length] = realmSeq;
 
         // First derivation: FN_GET_PUBLIC_KEY → compressed key + chainCode → xpub
-        VaultResult r1 = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, realmXpubPath);
+        VaultResult r1 = vault.execute(Alg.SECP256K1, KeyVault.FN_GET_PUBLIC_KEY, 0, null, realmXpubPath);
         assertTrue(r1.isOk());
         assertNotNull(r1.chainCode());
         String xpub1 = HDKeyDerivation.createMasterPubKeyFromBytes(
@@ -183,7 +184,7 @@ class NipxxConnectorTest {
 
         // Second derivation from a fresh vault with same mnemonic
         var vault2 = new Bip32KeyVault(TEST_MNEMONIC);
-        VaultResult r2 = vault2.execute(KeyVault.FN_GET_PUBLIC_KEY, null, realmXpubPath);
+        VaultResult r2 = vault2.execute(Alg.SECP256K1, KeyVault.FN_GET_PUBLIC_KEY, 0, null, realmXpubPath);
         String xpub2 = HDKeyDerivation.createMasterPubKeyFromBytes(
                 r2.data(), r2.chainCode())
                 .serializePubB58(BitcoinNetwork.MAINNET);

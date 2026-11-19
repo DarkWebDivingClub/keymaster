@@ -38,7 +38,7 @@ public class GpgServiceHandler extends AbstractServiceHandler {
         checkApproval("request_identities", "GPG identity listing");
         List<GpgIdentity> identities = new ArrayList<>();
         for (KeyEntry key : keys) {
-            VaultResult pubResult = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, key.toVaultPath());
+            VaultResult pubResult = vault.execute(key.alg(), KeyVault.FN_GET_PUBLIC_KEY, KeyVault.OPT_DEFAULT, null, key.toVaultPath());
             if (!pubResult.isOk()) {
                 continue;
             }
@@ -62,12 +62,12 @@ public class GpgServiceHandler extends AbstractServiceHandler {
     public GpgSignResponse signRequest(GpgSignRequest request) {
         checkApproval("sign_request", "GPG signing request");
         for (KeyEntry key : keys) {
-            VaultResult pubResult = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, key.toVaultPath());
+            VaultResult pubResult = vault.execute(key.alg(), KeyVault.FN_GET_PUBLIC_KEY, KeyVault.OPT_DEFAULT, null, key.toVaultPath());
             if (!pubResult.isOk()) {
                 continue;
             }
             if (Arrays.equals(pubResult.data(), request.publicKey())) {
-                VaultResult signResult = vault.execute(KeyVault.FN_SIGN, request.data(), key.toVaultPath());
+                VaultResult signResult = vault.execute(key.alg(), KeyVault.FN_SIGN, KeyVault.OPT_DEFAULT, request.data(), key.toVaultPath());
                 if (!signResult.isOk()) {
                     throw new IllegalStateException("sign failed: status=" + signResult.status());
                 }

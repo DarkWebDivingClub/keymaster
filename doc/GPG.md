@@ -26,6 +26,16 @@ validation, and private-key operations.
 Key generation, private-key import or export, key certification, revocation,
 and smart-card administration are outside the initial scope.
 
+## Keys in keymaster 0.9.0
+
+keymaster 0.9.0 (keyvault 0.6.0) derives OpenPGP keys with SLIP-10 from the
+`ed25519 seed` root: certification at `m/44'/1239'/mangle(identity)'/0'/0'`,
+signing at `.../1'/0'` (`65536'` and `65537'` before 0.9.0). Role `2'` is
+reserved for an X25519 encryption subkey that is not created yet. **Every
+OpenPGP key and fingerprint changed**; the 0.9.0 store migration sets each
+key's `creation_time` to the time of migration, so the new keys are not
+backdated (keymaster-wks mission 48.3).
+
 ## List Keys
 
 `gpg.listKeys` returns active OpenPGP keys visible to the authenticated Avatar

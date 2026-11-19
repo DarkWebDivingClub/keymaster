@@ -1,6 +1,6 @@
 package club.dwdc.keymaster;
 
-import club.dwdc.keyvault.core.AlgField;
+import club.dwdc.keyvault.core.Alg;
 import club.dwdc.keyvault.core.Bip32KeyDerivator;
 import club.dwdc.keyvault.core.ConfigField;
 import club.dwdc.keyvault.core.KeyVault;
@@ -410,7 +410,7 @@ public class Realm {
         try {
             int[] connectorPath = RealmPaths.connector(id, avatar.loginXpub());
 
-            VaultResult connectorKey = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, connectorPath);
+            VaultResult connectorKey = vault.execute(Alg.SECP256K1, KeyVault.FN_GET_PUBLIC_KEY, KeyVault.OPT_DEFAULT, null, connectorPath);
             if (!connectorKey.isOk()) {
                 throw new IllegalStateException(
                         "connector key derivation failed: status=" + connectorKey.status());

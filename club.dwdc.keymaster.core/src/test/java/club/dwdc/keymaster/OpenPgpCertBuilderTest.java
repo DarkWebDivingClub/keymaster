@@ -1,5 +1,6 @@
 package club.dwdc.keymaster;
 
+import club.dwdc.keyvault.core.Alg;
 import club.dwdc.keyvault.core.Bip32KeyVault;
 import club.dwdc.keyvault.core.KeyVault;
 import org.bouncycastle.bcpg.sig.KeyFlags;
@@ -95,8 +96,7 @@ class OpenPgpCertBuilderTest {
         List<KeyEntry> keys = gpgKeysForIdentity("alice@test.com");
 
         // Get raw public key from vault
-        byte[] certPubBytes = vault.execute(
-                KeyVault.FN_GET_PUBLIC_KEY, null, keys.get(0).toVaultPath()).data();
+        byte[] certPubBytes = vault.execute(Alg.ED25519, KeyVault.FN_GET_PUBLIC_KEY, 0, null, keys.get(0).toVaultPath()).data();
 
         String armor = OpenPgpCertBuilder.buildPublicCert(
                 vault, keys.get(0), keys.get(1),

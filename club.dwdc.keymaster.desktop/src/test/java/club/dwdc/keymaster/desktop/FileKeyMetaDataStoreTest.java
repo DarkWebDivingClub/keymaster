@@ -5,7 +5,7 @@ import club.dwdc.keymaster.IdentityPaths;
 import club.dwdc.keymaster.KeyEntry;
 import club.dwdc.keymaster.X509CertSlot;
 import club.dwdc.keymaster.X509Role;
-import club.dwdc.keyvault.core.AlgField;
+import club.dwdc.keyvault.core.UseField;
 import club.dwdc.keyvault.core.Bip32KeyDerivator;
 import club.dwdc.keyvault.core.Protocol;
 import org.bitcoinj.crypto.ChildNumber;
@@ -31,7 +31,7 @@ class FileKeyMetaDataStoreTest {
             new ChildNumber(44, true),
             new ChildNumber(Protocol.SSH.coinType(), true),
             new ChildNumber(Bip32KeyDerivator.mangle(identity), true),
-            new ChildNumber(new AlgField(AlgField.ALG_ED25519, 0, 0).toIndex(), true),
+            new ChildNumber(new UseField(0, 0).toIndex(), true),
             new ChildNumber(0, true)
         );
     }
@@ -41,7 +41,7 @@ class FileKeyMetaDataStoreTest {
             new ChildNumber(44, true),
             new ChildNumber(Protocol.OPENPGP.coinType(), true),
             new ChildNumber(Bip32KeyDerivator.mangle(identity), true),
-            new ChildNumber(new AlgField(AlgField.ALG_ED25519, 0, 0).toIndex(), true),
+            new ChildNumber(new UseField(0, 0).toIndex(), true),
             new ChildNumber(0, true)
         );
     }
@@ -51,7 +51,7 @@ class FileKeyMetaDataStoreTest {
             new ChildNumber(44, true),
             new ChildNumber(Protocol.NOSTR.coinType(), true),
             new ChildNumber(Bip32KeyDerivator.mangle(identity), true),
-            new ChildNumber(new AlgField(AlgField.ALG_SCHNORR, 0, 0).toIndex(), true),
+            new ChildNumber(new UseField(0, 0).toIndex(), true),
             new ChildNumber(0, true)
         );
     }
@@ -205,7 +205,7 @@ class FileKeyMetaDataStoreTest {
                 new KeyEntry(IdentityPaths.hdPath(path), Map.of("identity", "alice@atlanta.com")));
 
         String json = Files.readString(tempDir.resolve("key-metadata.json"));
-        String expected = "m/44'/1240'/1955269225'/196866'/0'";
+        String expected = "m/44'/1240'/1955269225'/2'/0'";
         assertEquals(expected, IdentityPaths.pathString(path));
         assertTrue(json.contains("\"path\": \"" + expected + "\"")
                         || json.contains("\"path\":\"" + expected + "\""),
@@ -255,5 +255,101 @@ class FileKeyMetaDataStoreTest {
 
         assertEquals("alice", store.getIdentityName(Bip32KeyDerivator.mangle("alice")));
         assertEquals("bob", store.getIdentityName(Bip32KeyDerivator.mangle("bob")));
+    }
+
+    // ── Format version and the 0.8.x migration (mission 48.3 step 5) ──
+
+    /** A 0.8.x store: a bare JSON array with the old path values. */
+    private static final String LEGACY_STORE = """
+            [
+              {"path": "m/44'/1238'/1955269225'/65536'/0'", "metadata": {"comment": "alice@atlanta.com"}},
+              {"path": "m/44'/1239'/1955269225'/65536'/0'", "metadata": {"identity": "alice@atlanta.com", "creation_time": "1751234567"}},
+              {"path": "m/44'/1239'/1955269225'/65537'/0'", "metadata": {"identity": "alice@atlanta.com", "creation_time": "1751234567"}},
+              {"path": "m/44'/1237'/1955269225'/0'/0'", "metadata": {"identity": "alice@atlanta.com"}},
+              {"path": "m/44'/1240'/1955269225'/2'/0'", "metadata": {"identity": "alice@atlanta.com"}}
+            ]
+            """;
+
+    @Test
+    void legacyStoreIsMigratedOnceWithBackupAndLog() throws Exception {
+        Path file = tempDir.resolve("key-metadata.json");
+        Files.writeString(file, LEGACY_STORE);
+
+        FileKeyMetaDataStore store = new FileKeyMetaDataStore(tempDir);
+
+        Identity alice = new Identity("alice@atlanta.com");
+        assertNotNull(store.getKey(IdentityPaths.hdPath(IdentityPaths.ssh(alice))));
+        assertNotNull(store.getKey(IdentityPaths.hdPath(IdentityPaths.gpg(alice, 0))));
+        assertNotNull(store.getKey(IdentityPaths.hdPath(IdentityPaths.gpg(alice, 1))));
+        assertNotNull(store.getKey(IdentityPaths.hdPath(IdentityPaths.nostr(alice))));
+        assertNotNull(store.getKey(IdentityPaths.hdPath(IdentityPaths.x509(alice, X509Role.TLS_CLIENT))));
+        assertEquals(5, store.allKeys().size());
+        assertEquals("alice@atlanta.com",
+                store.getKey(IdentityPaths.hdPath(IdentityPaths.ssh(alice))).metadata().get("comment"));
+
+        Path backup = tempDir.resolve("key-metadata.json" + FileKeyMetaDataStore.BACKUP_SUFFIX);
+        assertEquals(LEGACY_STORE, Files.readString(backup), "backup is the original, byte for byte");
+        String log = Files.readString(tempDir.resolve(FileKeyMetaDataStore.MIGRATION_LOG));
+        assertEquals(5, log.lines().filter(l -> !l.startsWith("#")).count(), log);
+
+        String json = Files.readString(file);
+        assertTrue(json.contains("\"version\": 2"), json);
+        assertFalse(json.contains("65536"), json);
+    }
+
+    @Test
+    void secondLoadDoesNotMigrateAgain() throws Exception {
+        Path file = tempDir.resolve("key-metadata.json");
+        Files.writeString(file, LEGACY_STORE);
+        new FileKeyMetaDataStore(tempDir);
+        String afterFirst = Files.readString(file);
+        Path logFile = tempDir.resolve(FileKeyMetaDataStore.MIGRATION_LOG);
+        String firstLog = Files.readString(logFile);
+
+        FileKeyMetaDataStore again = new FileKeyMetaDataStore(tempDir);
+
+        assertEquals(5, again.allKeys().size());
+        assertEquals(afterFirst, Files.readString(file));
+        assertEquals(firstLog, Files.readString(logFile), "no second migration log");
+    }
+
+    @Test
+    void corruptStoreFailsAndIsLeftUnchanged() throws Exception {
+        Path file = tempDir.resolve("key-metadata.json");
+        String corrupt = "[ {\"path\": \"m/44'/1238'/1'/65536'/0'\", \"metadata\": ";
+        Files.writeString(file, corrupt);
+
+        assertThrows(IllegalStateException.class, () -> new FileKeyMetaDataStore(tempDir));
+
+        assertEquals(corrupt, Files.readString(file));
+        assertFalse(Files.exists(tempDir.resolve("key-metadata.json" + FileKeyMetaDataStore.BACKUP_SUFFIX)));
+    }
+
+    @Test
+    void unreadablePathFailsAndIsLeftUnchanged() throws Exception {
+        Path file = tempDir.resolve("key-metadata.json");
+        String bad = "[{\"path\": \"not-a-path\", \"metadata\": {}}]";
+        Files.writeString(file, bad);
+        assertThrows(RuntimeException.class, () -> new FileKeyMetaDataStore(tempDir));
+        assertEquals(bad, Files.readString(file));
+    }
+
+    @Test
+    void newerFormatIsRefused() throws Exception {
+        Path file = tempDir.resolve("key-metadata.json");
+        String newer = "{\"version\": 3, \"keys\": []}";
+        Files.writeString(file, newer);
+        assertThrows(IllegalStateException.class, () -> new FileKeyMetaDataStore(tempDir));
+        assertEquals(newer, Files.readString(file));
+    }
+
+    @Test
+    void newStoreIsWrittenInTheCurrentFormat() throws Exception {
+        FileKeyMetaDataStore store = new FileKeyMetaDataStore(tempDir);
+        store.addKey(new KeyEntry(IdentityPaths.hdPath(IdentityPaths.ssh(new Identity("bob@biloxi.com"))), Map.of()));
+        String json = Files.readString(tempDir.resolve("key-metadata.json"));
+        assertTrue(json.startsWith("{"), json);
+        assertTrue(json.contains("\"version\": 2"), json);
+        assertFalse(Files.exists(tempDir.resolve("key-metadata.json" + FileKeyMetaDataStore.BACKUP_SUFFIX)));
     }
 }

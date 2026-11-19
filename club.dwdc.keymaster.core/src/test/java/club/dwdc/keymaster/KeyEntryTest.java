@@ -1,6 +1,7 @@
 package club.dwdc.keymaster;
 
-import club.dwdc.keyvault.core.AlgField;
+import club.dwdc.keyvault.core.Alg;
+import club.dwdc.keyvault.core.UseField;
 import club.dwdc.keyvault.core.Bip32KeyDerivator;
 import club.dwdc.keyvault.core.Protocol;
 import org.bitcoinj.crypto.ChildNumber;
@@ -18,7 +19,7 @@ class KeyEntryTest {
             new ChildNumber(44, true),
             new ChildNumber(Protocol.SSH.coinType(), true),
             new ChildNumber(Bip32KeyDerivator.mangle(identity), true),
-            new ChildNumber(new AlgField(AlgField.ALG_ED25519, 0, 0).toIndex(), true),
+            new ChildNumber(new UseField(0, 0).toIndex(), true),
             new ChildNumber(0, true)
         );
     }
@@ -38,7 +39,7 @@ class KeyEntryTest {
     @Test
     void algorithmExtractsUpper15Bits() {
         KeyEntry entry = new KeyEntry(sshPath("alice"), Map.of());
-        assertEquals(AlgField.ALG_ED25519, entry.algorithm());
+        assertEquals(Alg.ED25519, entry.alg(), "protocol default for SSH");
     }
 
     @Test
@@ -47,7 +48,7 @@ class KeyEntryTest {
             new ChildNumber(44, true),
             new ChildNumber(Protocol.SSH.coinType(), true),
             new ChildNumber(Bip32KeyDerivator.mangle("alice"), true),
-            new ChildNumber(new AlgField(AlgField.ALG_ED25519, 3, 0).toIndex(), true),
+            new ChildNumber(new UseField(3, 0).toIndex(), true),
             new ChildNumber(0, true)
         );
         KeyEntry entry = new KeyEntry(path, Map.of());
@@ -60,7 +61,7 @@ class KeyEntryTest {
             new ChildNumber(44, true),
             new ChildNumber(Protocol.SSH.coinType(), true),
             new ChildNumber(Bip32KeyDerivator.mangle("alice"), true),
-            new ChildNumber(new AlgField(AlgField.ALG_ED25519, 0, 5).toIndex(), true),
+            new ChildNumber(new UseField(0, 5).toIndex(), true),
             new ChildNumber(0, true)
         );
         KeyEntry entry = new KeyEntry(path, Map.of());

@@ -1,5 +1,6 @@
 package club.dwdc.keymaster;
 
+import club.dwdc.keyvault.core.Alg;
 import club.dwdc.keyvault.core.KeyVault;
 import club.dwdc.keyvault.core.VaultResult;
 import org.bouncycastle.bcpg.HashAlgorithmTags;
@@ -49,7 +50,7 @@ class VaultPGPContentSignerBuilder implements PGPContentSignerBuilder {
 
             @Override
             public byte[] getSignature() {
-                VaultResult result = vault.execute(KeyVault.FN_SIGN, digest(), vaultPath);
+                VaultResult result = vault.execute(Alg.ED25519, KeyVault.FN_SIGN, KeyVault.OPT_ED25519_PURE, digest(), vaultPath);
                 if (!result.isOk()) {
                     throw new IllegalStateException(
                             "vault signing failed: status=" + result.status());

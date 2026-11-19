@@ -1,5 +1,6 @@
 package club.dwdc.keymaster;
 
+import club.dwdc.keyvault.core.Alg;
 import club.dwdc.keyvault.core.Bip32KeyDerivator;
 import club.dwdc.keyvault.core.Bip32KeyVault;
 import club.dwdc.keyvault.core.KeyVault;
@@ -33,7 +34,7 @@ class RealmPathsTest {
         assertEquals(1405226288, path[0] & ~H);
         assertEquals(1, path[1] & ~H);
         assertEquals(1234, path[2] & ~H);
-        assertEquals(0, path[3] & ~H, "AlgField(SCHNORR,0,0) — the vault reads level 4");
+        assertEquals(0, path[3] & ~H, "use' = UseField(0, 0), unchanged from 0.8.x");
         assertEquals(Bip32KeyDerivator.mangle(LOGIN_XPUB), path[4] & ~H);
     }
 
@@ -47,7 +48,7 @@ class RealmPathsTest {
     @Test
     void theVaultAcceptsAConnectorPath() {
         var vault = new Bip32KeyVault(RealmTest.TEST_MNEMONIC);
-        var result = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null,
+        var result = vault.execute(Alg.SECP256K1, KeyVault.FN_GET_PUBLIC_KEY, 0, null,
                 RealmPaths.connector(1234, LOGIN_XPUB));
 
         assertTrue(result.isOk(), "status=" + result.status());
@@ -90,6 +91,6 @@ class RealmPathsTest {
         int[] channel = RealmPaths.serviceChannel(
                 RealmPaths.connector(1234, LOGIN_XPUB), "nostr", 0);
 
-        assertTrue(vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, channel).isOk());
+        assertTrue(vault.execute(Alg.SECP256K1, KeyVault.FN_GET_PUBLIC_KEY, 0, null, channel).isOk());
     }
 }

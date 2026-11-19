@@ -1,6 +1,7 @@
 package club.dwdc.keymaster;
 
-import club.dwdc.keyvault.core.AlgField;
+import club.dwdc.keyvault.core.Alg;
+import club.dwdc.keyvault.core.UseField;
 import club.dwdc.keyvault.core.Bip32KeyDerivator;
 import club.dwdc.keyvault.core.Bip32KeyVault;
 import club.dwdc.keyvault.core.ConfigField;
@@ -36,20 +37,20 @@ class NostrIdentitySignerTest {
                 44 | H,
                 Protocol.NOSTR.coinType() | H,
                 identityIndex,
-                new AlgField(AlgField.ALG_SCHNORR, 0, 0).toIndex() | H,
+                new UseField(0, 0).toIndex() | H,
                 new ConfigField(ConfigField.CSPRNG_NONE, 0).toIndex() | H
         };
 
         NostrIdentitySigner signer = new NostrIdentitySigner() {
             @Override
             public String getPubkey() {
-                byte[] compressed = vault.execute(KeyVault.FN_GET_PUBLIC_KEY, null, nostrPath).data();
+                byte[] compressed = vault.execute(Alg.SECP256K1, KeyVault.FN_GET_PUBLIC_KEY, 0, null, nostrPath).data();
                 return NostrUtil.bytesToHex(java.util.Arrays.copyOfRange(compressed, 1, 33));
             }
 
             @Override
             public byte[] sign(byte[] hash) {
-                return vault.execute(KeyVault.FN_SIGN, hash, nostrPath).data();
+                return vault.execute(Alg.SECP256K1, KeyVault.FN_SIGN, 0, hash, nostrPath).data();
             }
         };
 
