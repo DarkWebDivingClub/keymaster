@@ -151,7 +151,7 @@ public class Realm {
 
         this.id = id;
         this.primaryIdentity = primaryIdentity;
-        this.name = (name == null || name.isBlank()) ? primaryIdentity.localPart() : name;
+        this.name = (name == null || name.trim().isEmpty()) ? primaryIdentity.localPart() : name;
         this.vault = vault;
         this.approvalHandler = approvalHandler;
 

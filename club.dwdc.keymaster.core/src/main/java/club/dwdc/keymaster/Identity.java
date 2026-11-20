@@ -19,7 +19,7 @@ import club.dwdc.keyvault.core.Bip32KeyDerivator;
 public record Identity(String name) {
 
     public Identity {
-        if (name == null || name.isBlank()) {
+        if (name == null || name.trim().isEmpty()) {
             throw new IllegalArgumentException("identity must not be blank");
         }
     }

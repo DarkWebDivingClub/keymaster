@@ -129,6 +129,36 @@
                     <artifactId>maven-surefire-plugin</artifactId>
                     <version>${surefire.version}</version>
                 </plugin>
+                <!-- Android API floor (mission 48.7): the app consumes this library at
+                     minSdk 26. Checks every reference against the Android API 26
+                     signature. Ignored: java.lang.Record (D8 always desugars records)
+                     and java.lang.MatchException (javac 21 guard for exhaustive
+                     switches, never reached). D8-backported methods are not allowed:
+                     the check stays independent of the app's AGP version. -->
+                <plugin>
+                    <groupId>org.codehaus.mojo</groupId>
+                    <artifactId>animal-sniffer-maven-plugin</artifactId>
+                    <version>1.24</version>
+                    <configuration>
+                        <signature>
+                            <groupId>com.toasttab.android</groupId>
+                            <artifactId>gummy-bears-api-26</artifactId>
+                            <version>0.16.0</version>
+                        </signature>
+                        <ignores>
+                            <ignore>java.lang.Record</ignore>
+                            <ignore>java.lang.MatchException</ignore>
+                        </ignores>
+                    </configuration>
+                    <executions>
+                        <execution>
+                            <id>android-api-floor</id>
+                            <goals>
+                                <goal>check</goal>
+                            </goals>
+                        </execution>
+                    </executions>
+                </plugin>
             </plugins>
         </pluginManagement>
     </build>

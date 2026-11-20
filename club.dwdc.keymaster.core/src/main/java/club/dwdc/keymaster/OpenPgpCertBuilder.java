@@ -128,7 +128,7 @@ public final class OpenPgpCertBuilder {
         try (ArmoredOutputStream out = new ArmoredOutputStream(buf)) {
             secretRing.toCertificate().encode(out);
         }
-        return buf.toString(StandardCharsets.US_ASCII);
+        return new String(buf.toByteArray(), StandardCharsets.US_ASCII);
     }
 
     private static byte[] getPublicKey(KeyVault vault, KeyEntry key) {
