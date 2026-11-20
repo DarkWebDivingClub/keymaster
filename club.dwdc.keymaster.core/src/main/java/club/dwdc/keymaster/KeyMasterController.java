@@ -198,7 +198,7 @@ public class KeyMasterController {
         // no lock, since it only ever frees an id or a name.
         synchronized (realmAllocation) {
             int realmId = nextRealmId();
-            String realmName = (name == null || name.isBlank())
+            String realmName = (name == null || name.trim().isEmpty())
                     ? uniqueDefaultName(primaryIdentity)
                     : name;
 
@@ -322,7 +322,7 @@ public class KeyMasterController {
         selections.add(new IdentitySelection(primary));
         if (additionalIdentities != null) {
             for (String extra : additionalIdentities) {
-                if (extra != null && !extra.isBlank() && !extra.equals(identity)) {
+                if (extra != null && !extra.trim().isEmpty() && !extra.equals(identity)) {
                     selections.add(new IdentitySelection(new Identity(extra)));
                 }
             }

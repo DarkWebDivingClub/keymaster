@@ -6,6 +6,7 @@ import org.bitcoinj.base.BitcoinNetwork;
 import org.bitcoinj.crypto.DeterministicKey;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -31,10 +32,10 @@ public record AvatarDescriptor(
     private static final int DEFAULT_RFCOMM_CHANNEL = 3;
 
     public AvatarDescriptor {
-        if (relay == null || relay.isBlank()) {
+        if (relay == null || relay.trim().isEmpty()) {
             throw new IllegalArgumentException("relay must not be null or blank");
         }
-        if (loginXpub == null || loginXpub.isBlank()) {
+        if (loginXpub == null || loginXpub.trim().isEmpty()) {
             throw new IllegalArgumentException("loginXpub must not be null or blank");
         }
         if (services == null) {
@@ -54,7 +55,7 @@ public record AvatarDescriptor(
 
     /** True when this descriptor specifies RFCOMM transport. */
     public boolean isRfcomm() {
-        return btAddr != null && !btAddr.isBlank();
+        return btAddr != null && !btAddr.trim().isEmpty();
     }
 
     /**
@@ -103,7 +104,7 @@ public record AvatarDescriptor(
      * @throws IOException if the file cannot be read
      */
     public static AvatarDescriptor fromFile(Path path) throws IOException {
-        return fromJson(Files.readString(path));
+        return fromJson(new String(Files.readAllBytes(path), StandardCharsets.UTF_8));
     }
 
     /** Internal deserialization target — allows null fields for validation in the record constructor. */
