@@ -108,16 +108,16 @@ public class Realm {
     }
 
     /**
-     * As above, with the metadata store the X.509 handler keeps certificates
-     * in. {@code null} (Android, until 37.2) serves X.509 keys without
-     * certificates and refuses {@code x509.import}.
+     * As above, with the store the X.509 handler keeps certificates in.
+     * {@code null} serves X.509 keys without certificates and refuses
+     * {@code x509.import}.
      *
-     * @param keyStore metadata store for certificate slots, or {@code null}
+     * @param certStore where X.509 certificates are kept, or {@code null}
      */
     public Realm(int id, String name, List<IdentitySelection> selections,
                  Identity primaryIdentity, KeyVault vault,
                  List<KeyEntry> availableKeys, ApprovalHandler approvalHandler,
-                 KeyMetaDataStore keyStore) {
+                 X509CertStore certStore) {
 
         if (selections == null || selections.isEmpty()) {
             throw new IllegalArgumentException("realm needs at least one identity selection");
@@ -167,7 +167,7 @@ public class Realm {
                 ? IdentityPaths.nostr(primaryIdentity)
                 : storedNostrPath(availableKeys, primaryIdentity);
 
-        this.handlers = buildHandlers(availableKeys, selections, keyStore);
+        this.handlers = buildHandlers(availableKeys, selections, certStore);
     }
 
     /**
@@ -257,7 +257,7 @@ public class Realm {
      */
     private Map<Integer, AbstractServiceHandler> buildHandlers(
             List<KeyEntry> availableKeys, List<IdentitySelection> selections,
-            KeyMetaDataStore keyStore) {
+            X509CertStore certStore) {
 
         Map<Integer, AbstractServiceHandler> built = new ConcurrentHashMap<>();
         if (availableKeys == null || availableKeys.isEmpty()) {
@@ -287,7 +287,7 @@ public class Realm {
         // X.509 keys are computed from the identities, not read from the store
         // (doc/x509.md); the store only holds their certificates.
         register(built, Protocol.X509.coinType(),
-                new X509ServiceHandler(vault, x509Identities(selections), keyStore));
+                new X509ServiceHandler(vault, x509Identities(selections), certStore));
 
         log.info("Realm {} ({}) resolved {} handler(s) for {}",
                 id, name, built.size(), identityNames());

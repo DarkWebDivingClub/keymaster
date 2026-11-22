@@ -133,6 +133,14 @@ public class KeyMasterController {
             byte[] compressed = vault.execute(Alg.SECP256K1, KeyVault.FN_GET_PUBLIC_KEY, KeyVault.OPT_DEFAULT, null, nostrPath).data();
             String pubkeyHex = NostrUtil.bytesToHex(Arrays.copyOfRange(compressed, 1, 33));
             kvStore.put(new NostrKeyEntry(nostrHdPath, identity, pubkeyHex));
+            // X.509 keys of the template roles, as on the desktop. Never
+            // overwrite: an existing entry may already hold a certificate.
+            for (X509Role role : X509Role.TEMPLATE) {
+                HDPath x509HdPath = IdentityPaths.hdPath(IdentityPaths.x509(id, role));
+                if (!(kvStore.get(x509HdPath) instanceof X509KeyEntry)) {
+                    kvStore.put(new X509KeyEntry(x509HdPath, identity));
+                }
+            }
         } else {
             throw new IllegalStateException("No metadata store available for createIdentity");
         }
@@ -204,7 +212,7 @@ public class KeyMasterController {
 
             realm = new Realm(realmId, realmName, selections, primaryIdentity,
                     km.vault, availableKeys(), approvalHandler,
-                    km.keyMetaDataStore); // null on Android: no X.509 cert slots yet (37.2)
+                    certStore());
             if (connectionStateListener != null) {
                 realm.setConnectionStateListener(connectionStateListener);
             }
@@ -346,6 +354,13 @@ public class KeyMasterController {
             return;
         }
         detachAll();
+    }
+
+    /** Where X.509 certificates are kept: in whichever metadata store is configured. */
+    private X509CertStore certStore() {
+        return km.kvMetaStore != null
+                ? X509CertStore.of(km.kvMetaStore)
+                : X509CertStore.of(km.keyMetaDataStore);
     }
 
     /** Every key the metadata store holds, from whichever store is configured. */

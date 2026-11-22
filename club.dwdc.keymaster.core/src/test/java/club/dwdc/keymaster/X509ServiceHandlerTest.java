@@ -60,7 +60,7 @@ class X509ServiceHandlerTest {
     @BeforeEach
     void setUp() {
         store = new InMemoryKeyMetaDataStore();
-        handler = new X509ServiceHandler(vault, List.of(ALICE), store);
+        handler = new X509ServiceHandler(vault, List.of(ALICE), X509CertStore.of(store));
         handler.setApprovalUI((method, description) -> true);
     }
 
@@ -317,7 +317,7 @@ class X509ServiceHandlerTest {
     @Test
     void import_noKeyMatches_otherIdentity() throws Exception {
         // Bob's handler serves no key the certificate carries.
-        var bobHandler = new X509ServiceHandler(vault, List.of(BOB), store);
+        var bobHandler = new X509ServiceHandler(vault, List.of(BOB), X509CertStore.of(store));
         bobHandler.setApprovalUI((m, d) -> true);
 
         X509ImportResponse response = bobHandler.importCert(new X509ImportRequest(der("tls-client-ok.pem")));
@@ -330,7 +330,7 @@ class X509ServiceHandlerTest {
     @Test
     void import_matchesTheRightIdentity() throws Exception {
         // Two identities served: the certificate lands in Alice's slot only.
-        var both = new X509ServiceHandler(vault, List.of(BOB, ALICE), store);
+        var both = new X509ServiceHandler(vault, List.of(BOB, ALICE), X509CertStore.of(store));
         both.setApprovalUI((m, d) -> true);
 
         assertTrue(both.importCert(new X509ImportRequest(der("tls-client-ok.pem"))).stored());
