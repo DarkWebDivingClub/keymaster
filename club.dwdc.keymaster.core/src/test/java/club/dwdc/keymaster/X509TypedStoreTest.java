@@ -185,6 +185,40 @@ class X509TypedStoreTest {
         assertTrue(response.getAsJsonObject("result").get("stored").getAsBoolean());
     }
 
+    // ── no SUN provider (Android) ─────────────────────────────────────────
+
+    @Test
+    void certificateFactory_fallsBackWithoutThePreferredProvider() throws Exception {
+        var factory = X509CertCheck.certificateFactory("NoSuchProviderOnThisRuntime");
+        assertNotNull(factory.generateCertificate(new ByteArrayInputStream(der("tls-client-ok.pem"))));
+    }
+
+    /** As on Android: no SUN provider at all, BouncyCastle first. Before mission 50 this was MALFORMED. */
+    @Test
+    void importWorksWithoutTheSunProvider() throws Exception {
+        java.security.Provider[] before = Security.getProviders();
+        java.security.Provider sun = Security.getProvider("SUN");
+        assertNotNull(sun, "the test runs on a JDK");
+        int position = java.util.Arrays.asList(before).indexOf(sun) + 1;
+        byte[] der = der("tls-client-ok.pem");
+        byte[] serverAuth = der("server-auth.pem");
+        Security.removeProvider("SUN");
+        try {
+            var store = new InMemoryKVMetaStore();
+            var handler = handler(X509CertStore.of(store));
+
+            X509ImportResponse response = handler.importCert(new X509ImportRequest(der));
+
+            assertEquals(Verdict.ACCEPTED, response.verdict());
+            assertArrayEquals(der, ((X509KeyEntry) store.get(ALICE_TLS)).certificate().orElseThrow());
+            assertEquals(Verdict.EKU_MISMATCH,
+                    X509CertCheck.check(vault, ALICE, X509Role.TLS_CLIENT, serverAuth));
+        } finally {
+            Security.insertProviderAt(sun, position);
+        }
+        assertNotNull(Security.getProvider("SUN"));
+    }
+
     // ── the controller on the typed store (Android) ───────────────────────
 
     @Test

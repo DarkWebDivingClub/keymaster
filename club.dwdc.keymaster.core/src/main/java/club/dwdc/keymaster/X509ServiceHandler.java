@@ -8,7 +8,6 @@ import org.bitcoinj.crypto.HDPath;
 import java.io.ByteArrayInputStream;
 import java.security.GeneralSecurityException;
 import java.security.MessageDigest;
-import java.security.cert.CertificateFactory;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -155,10 +154,10 @@ public class X509ServiceHandler extends AbstractServiceHandler {
         store.putCertificate(slot.hdPath(), slot.identity().name(), der);
     }
 
-    /** The certificate re-encoded by the SUN parser: DER even if PEM was sent. */
+    /** The certificate re-encoded by the check's parser: DER even if PEM was sent. */
     private static byte[] canonicalDer(byte[] cert) {
         try {
-            return CertificateFactory.getInstance("X.509", "SUN")
+            return X509CertCheck.certificateFactory()
                     .generateCertificate(new ByteArrayInputStream(cert))
                     .getEncoded();
         } catch (GeneralSecurityException e) {
