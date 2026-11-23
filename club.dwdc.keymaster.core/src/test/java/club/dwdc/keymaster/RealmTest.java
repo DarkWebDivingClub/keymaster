@@ -198,7 +198,7 @@ class RealmTest {
         var alice = new Identity("alice@atlanta.com");
 
         var withStore = new Realm(1, "with", List.of(new IdentitySelection(alice)), alice,
-                vault, store.allKeys(), null, store);
+                vault, store.allKeys(), null, X509CertStore.of(store));
         var withoutStore = realm(store, vault, alice, new IdentitySelection(alice));
 
         // With a store, an unknown certificate is a verdict; without one, "unsupported".

@@ -6,6 +6,9 @@ import club.dwdc.keyvault.core.VaultResult;
 
 import java.io.ByteArrayInputStream;
 import java.security.GeneralSecurityException;
+import java.security.NoSuchProviderException;
+import java.security.Security;
+import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.util.Arrays;
@@ -32,9 +35,12 @@ import java.util.List;
  *
  * <p>Not checked: chain, issuer, validity dates, revocation, subject, SAN.
  *
- * <p>Parsing uses the JDK's own {@code SUN} provider by name. BouncyCastle is
- * inserted at provider position 1 elsewhere in KeyMaster, and an unnamed
- * {@code getInstance("X.509")} would silently hand parsing to it.
+ * <p>Parsing uses the JDK's own {@code SUN} provider by name where there is
+ * one. BouncyCastle is inserted at provider position 1 elsewhere in
+ * KeyMaster, and an unnamed {@code getInstance("X.509")} would silently hand
+ * parsing to it. Android has no {@code SUN} provider: there the platform's
+ * {@code X.509} factory is used ({@link #certificateFactory()}, mission 50;
+ * before it, every import on the phone was {@code MALFORMED}).
  */
 public final class X509CertCheck {
 
@@ -80,7 +86,7 @@ public final class X509CertCheck {
         X509Certificate x509;
         List<String> eku;
         try {
-            CertificateFactory factory = CertificateFactory.getInstance("X.509", "SUN");
+            CertificateFactory factory = certificateFactory();
             x509 = (X509Certificate) factory.generateCertificate(new ByteArrayInputStream(cert));
             eku = x509.getExtendedKeyUsage();
         } catch (GeneralSecurityException e) {
@@ -93,6 +99,29 @@ public final class X509CertCheck {
             return Verdict.KEY_MISMATCH;
         }
         return checkEku(eku, role);
+    }
+
+    /** The provider preferred for parsing: the JDK's own. Android has none of that name. */
+    static final String PREFERRED_PROVIDER = "SUN";
+
+    /**
+     * The {@code X.509} certificate factory: {@value #PREFERRED_PROVIDER} if
+     * the runtime has it (the JDK), otherwise the platform's (Android).
+     */
+    static CertificateFactory certificateFactory() throws CertificateException {
+        return certificateFactory(PREFERRED_PROVIDER);
+    }
+
+    /** As {@link #certificateFactory()}, with the preferred provider named; for tests. */
+    static CertificateFactory certificateFactory(String preferred) throws CertificateException {
+        if (Security.getProvider(preferred) != null) {
+            try {
+                return CertificateFactory.getInstance("X.509", preferred);
+            } catch (NoSuchProviderException e) {
+                // Removed between the check and the call: use the platform's.
+            }
+        }
+        return CertificateFactory.getInstance("X.509");
     }
 
     /** The SPKI the certificate must carry: fixed P-256 header + the point. */

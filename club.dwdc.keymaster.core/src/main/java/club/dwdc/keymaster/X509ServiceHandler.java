@@ -8,7 +8,6 @@ import org.bitcoinj.crypto.HDPath;
 import java.io.ByteArrayInputStream;
 import java.security.GeneralSecurityException;
 import java.security.MessageDigest;
-import java.security.cert.CertificateFactory;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -21,10 +20,10 @@ import java.util.Map;
  * <p>Keys are <b>computed</b>, not read from the store: one per served
  * identity and {@link X509Role#TEMPLATE} role, at
  * {@link IdentityPaths#x509}. They become this handler's immutable
- * {@link #keys()}, the enforcement boundary. The store is used only for the
- * certificate slot ({@link X509CertSlot}) and is read on every call — no
- * cache. A {@code null} store (Android, until 37.2) lists keys without
- * certificates and refuses imports with {@code "unsupported"}.
+ * {@link #keys()}, the enforcement boundary. The {@link X509CertStore} holds
+ * only their certificates, one per key, and is read on every call — no cache.
+ * A {@code null} store lists keys without certificates and refuses imports
+ * with {@code "unsupported"}.
  */
 public class X509ServiceHandler extends AbstractServiceHandler {
 
@@ -40,13 +39,13 @@ public class X509ServiceHandler extends AbstractServiceHandler {
     }
 
     private final List<Slot> slots;
-    private final KeyMetaDataStore store;
+    private final X509CertStore store;
 
     /**
      * @param identities the identities this realm serves X.509 for
-     * @param store      metadata store holding certificate slots, or {@code null}
+     * @param store      where certificates are kept, or {@code null}
      */
-    public X509ServiceHandler(KeyVault vault, List<Identity> identities, KeyMetaDataStore store) {
+    public X509ServiceHandler(KeyVault vault, List<Identity> identities, X509CertStore store) {
         super(vault, entriesFor(identities));
         this.slots = slotsFor(identities);
         this.store = store;
@@ -99,11 +98,15 @@ public class X509ServiceHandler extends AbstractServiceHandler {
      * answers {@code KEY_MISMATCH} for every key but the one it carries. No
      * matching key at all is {@code KEY_MISMATCH}. Every verdict is a result.
      *
-     * @throws IllegalArgumentException {@code "unsupported"} without a store
+     * <p>The {@code chain} field is reserved: a request carrying one is
+     * refused before the user is asked (mission 50, certificate only).
+     *
+     * @throws IllegalArgumentException {@code "unsupported"} without a store,
+     *                                  or for a request with a chain
      */
     @ServiceMethod(value = "import", defaultPolicy = ApprovalPolicy.ASK)
     public X509ImportResponse importCert(X509ImportRequest request) {
-        if (store == null) {
+        if (store == null || request.chain() != null) {
             throw new IllegalArgumentException("unsupported");
         }
         checkApproval("import", "X.509 certificate import");
@@ -143,26 +146,18 @@ public class X509ServiceHandler extends AbstractServiceHandler {
     }
 
     private byte[] storedCert(Slot slot) {
-        if (store == null) {
-            return null;
-        }
-        KeyEntry entry = store.getKey(slot.hdPath());
-        return entry == null ? null : X509CertSlot.get(entry).orElse(null);
+        return store == null ? null : store.certificate(slot.hdPath()).orElse(null);
     }
 
     /** Write the slot: keep the entry's other metadata, replace the certificate. */
     private void store(Slot slot, byte[] der) {
-        KeyEntry base = store.getKey(slot.hdPath());
-        if (base == null) {
-            base = new KeyEntry(slot.hdPath(), Map.of("identity", slot.identity().name()));
-        }
-        store.addKey(X509CertSlot.with(base, der));
+        store.putCertificate(slot.hdPath(), slot.identity().name(), der);
     }
 
-    /** The certificate re-encoded by the SUN parser: DER even if PEM was sent. */
+    /** The certificate re-encoded by the check's parser: DER even if PEM was sent. */
     private static byte[] canonicalDer(byte[] cert) {
         try {
-            return CertificateFactory.getInstance("X.509", "SUN")
+            return X509CertCheck.certificateFactory()
                     .generateCertificate(new ByteArrayInputStream(cert))
                     .getEncoded();
         } catch (GeneralSecurityException e) {
